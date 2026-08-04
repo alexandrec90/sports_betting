@@ -1,0 +1,25 @@
+target-version = "py312"
+line-length = 100
+# `.agents/skills/` is generated from `.claude/skills/`; lint the source once.
+extend-exclude = [".agents"]
+force-exclude = true
+
+[lint]
+select = ["E", "F", "I", "UP", "B", "ASYNC", "S", "SIM", "T20", "N", "RUF"]
+
+[lint.per-file-ignores]
+# CLI / diagnostic tooling: terminal output (T201), terse loop vars (E741), and long
+# regex/format lines (E501) are idiomatic here. These scripts orchestrate trusted
+# first-party tools (git, ruff, docker) via subprocess, so the bandit
+# subprocess/partial-path/urlopen warnings (S603/S607/S310) are expected.
+"scripts/**/*.py" = ["T201", "E741", "E501", "S603", "S607", "S310"]
+# Skill payload scripts (`.claude/skills/*/`) are CLI tools a skill shells out to and
+# reads the stdout of, so printing is their entire interface. These arrive vendored
+# from devkit, so this line must stay in step with devkit's own ruff.toml.
+".claude/skills/**/*.py" = ["T201", "E741", "E501", "S603", "S607", "S310"]
+# Tests: asserts (S101), long lines, and hardcoded test passwords (S105).
+"tests/**/*.py" = ["E501", "S101", "S105"]
+"scripts/hooks/tests/**/*.py" = ["E501", "S101", "S105"]
+
+[format]
+quote-style = "double"

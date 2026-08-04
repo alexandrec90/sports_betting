@@ -1,0 +1,37 @@
+name: Set up the Python toolchain
+description: >-
+  Install Python and uv, then sync the project from its committed uv.lock. The
+  repository must already be checked out — a local composite action is loaded from
+  the workspace — so callers keep their own actions/checkout step, whose arguments
+  (ref, fetch-depth) differ per job.
+
+inputs:
+  python-version:
+    description: >-
+      Python version to install. The default is this project's version, so the gate
+      has one place to change it rather than one per job.
+    required: false
+    default: "3.12"
+
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-python@v7
+      with:
+        python-version: ${{ inputs.python-version }}
+    - name: Install uv
+      shell: bash
+      run: pip install uv
+    - name: Sync the project from uv.lock
+      # `uv sync` installs from the committed uv.lock, so the gate resolves the same
+      # versions the author did — the same command `.claude/hooks/session-start.sh`
+      # runs, which is what makes a lock that cannot resolve fail here rather than in
+      # someone's sandbox.
+      #
+      # `--all-extras` picks up the `dev` extra (ruff/mypy/pytest); without it the
+      # lint job has no linters and `lint-all.py`, which skips what it cannot import,
+      # would report a clean run having checked nothing. `--all-groups` is a no-op
+      # here and covers a project that later moves its toolchain to a PEP 735
+      # dependency-group.
+      shell: bash
+      run: uv sync --all-extras --all-groups

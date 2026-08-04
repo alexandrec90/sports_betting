@@ -5,7 +5,7 @@ description = "Sports bet automater and data collector"
 requires-python = ">=3.12"
 dependencies = [
   "sqlalchemy>=2.0",
-  "psycopg[binary]>=3.2",
+  "psycopg[binary]>=3.3.4",
   "pyarrow>=17.0",
   "duckdb>=1.1",
   "boto3>=1.35",

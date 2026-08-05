@@ -10,6 +10,30 @@
 # `.env`, and it must equal the checkout's directory name).
 
 services:
+  collector:
+    build:
+      context: .
+      target: prod
+    restart: unless-stopped
+    command: ["sports-betting", "serve"]
+    environment:
+      ARCHIVE_ROOT: /data-lake/archive
+      SPORTSDB_API_KEY: ${SPORTSDB_API_KEY:-123}
+      SPORTSDB_TIMEOUT_SECONDS: ${SPORTSDB_TIMEOUT_SECONDS:-20}
+      SPORTSDB_SPORTS: ${SPORTSDB_SPORTS:-Soccer,Baseball,Basketball,Ice Hockey,American Football}
+      FOOTBALL_DATA_API_KEY: ${FOOTBALL_DATA_API_KEY:-}
+      BALLDONTLIE_API_KEY: ${BALLDONTLIE_API_KEY:-}
+      BALLDONTLIE_SPORTS: ${BALLDONTLIE_SPORTS:-nba,nfl,mlb,epl}
+      THE_ODDS_API_KEY: ${THE_ODDS_API_KEY:-}
+      THE_ODDS_API_SPORTS: ${THE_ODDS_API_SPORTS:-basketball_nba,baseball_mlb}
+      COLLECTION_INTERVAL_HOURS: ${COLLECTION_INTERVAL_HOURS:-6}
+      SCHEDULER_HEALTH_FILE: /app/logs/scheduler-health.json
+      PROVIDER_QUOTA_FILE: /app/logs/provider-quotas.json
+    volumes:
+      - ../data-lake/data:/data-lake
+      - ./logs:/app/logs
+    mem_limit: 512m
+
   db:
     image: postgres:18
     restart: unless-stopped

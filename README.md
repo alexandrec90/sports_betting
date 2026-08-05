@@ -1,6 +1,7 @@
 # Sports Betting
 
-Sports bet automater and data collector
+Sports research and data collection for Québec. Wager execution is intentionally out of
+scope until a legally available operator explicitly permits API automation.
 
 Generated from [devkit](https://github.com/alexandrec90/devkit)'s project
 template. The agent harness in `scripts/hooks/` is vendored from there — see
@@ -15,6 +16,65 @@ uv sync --all-extras          # creates .venv from the committed uv.lock
 docker compose up -d
 pytest
 ```
+
+Ingest yesterday's events/results with the no-signup TheSportsDB source:
+
+```bash
+uv run sports-betting ingest-events --sport "Ice Hockey"
+uv run sports-betting ingest-events --date 2026-08-03 --league 4380
+uv run sports-betting ingest-events --from 2026-08-01 --to 2026-08-03 --sport Soccer
+```
+
+Run every configured collector once, or keep the scheduler running:
+
+```bash
+uv run sports-betting collect
+uv run sports-betting collect --provider football-data
+uv run sports-betting serve
+# persistent container (also starts with a plain `docker compose up -d`)
+docker compose up -d collector
+```
+
+The scheduler serializes all writes and runs each provider every six hours. Missing-key jobs
+are recorded as `skipped`, not failures. Outcomes live in `logs/scheduler-health.json`; the
+restart-safe Odds API safety budget lives in `logs/provider-quotas.json`. Keep only one
+collector instance running against an archive root.
+
+The default local archive is `../data-lake/data/archive`. Each provider response becomes a
+content-addressed snapshot in Hive-partitioned Parquet, so an unchanged re-fetch is a no-op
+while a schedule later becoming a final result remains auditable. The catalog is written to
+`_catalog/sports_events.json`. Override `ARCHIVE_ROOT` in `.env` when the lake lives elsewhere.
+See [data sources](docs/data-sources.md) for provider trade-offs and the Québec constraint.
+
+## Historical bulk imports
+
+The recommended free training dumps need no credentials. Start with a narrow range, verify
+disk use and schema, then expand it:
+
+```bash
+# Soccer match results, statistics, and historical bookmaker odds
+uv run sports-betting bulk-import football-data --from-season 2020 --to-season 2025 --leagues E0,SP1
+
+# NFL play-by-play (available from 1999)
+uv run sports-betting bulk-import nflverse --from-season 2020 --to-season 2025
+
+# NHL shot data (available from 2007) and compact team game-level history
+uv run sports-betting bulk-import moneypuck --from-season 2020 --to-season 2025
+uv run sports-betting bulk-import moneypuck-games
+
+# Discover StatsBomb IDs, then import one competition-season's matches and events
+uv run sports-betting statsbomb-list
+uv run sports-betting bulk-import statsbomb --competition-id 9 --season-id 281
+```
+
+Each source file is retained exactly and converted to Zstandard-compressed Parquet under its
+own dataset in `ARCHIVE_ROOT`. Catalogs contain source URLs, SHA-256 hashes, fetch times,
+licence links, row counts, and schemas. Repeated imports use ETag/Last-Modified validators;
+changed publisher files create immutable `version=<hash>` partitions.
+
+Historical backfills are intentionally manual because a broad run can consume gigabytes.
+Set `BULK_REFRESH_ENABLED=true` to add a serialized weekly current-season refresh; configure
+its sources and StatsBomb IDs with the `BULK_*` variables documented in `.env.example`.
 
 In VS Code, `Ctrl+Shift+B` runs the default build task and the task quick-pick
 (`Ctrl+Shift+P` → "Run Task") lists everything else, each with a one-line `detail`
@@ -56,7 +116,8 @@ scripts/                 project scripts (Python, each with tests)
 scripts/hooks/           vendored agent harness — edit upstream in devkit
 .devkit.toml      the per-project harness seam (NOT vendored)
 docker-compose.yml       the local stack
-sports_betting/archive/          data-lake writer + DuckDB read lens
+sports_betting/archive/          private bronze Parquet writer + catalog
+sports_betting/providers/        provider adapters and normalized event snapshots
 ```
 
 ## CI

@@ -7,19 +7,35 @@ force-exclude = true
 [lint]
 select = ["E", "F", "I", "UP", "B", "ASYNC", "S", "SIM", "T20", "N", "RUF"]
 
+# E501 (line-too-long) is off deliberately, and was never chosen in the first place:
+# `"E"` above is a *family prefix* and line-too-long is one of its 19 members, so it
+# arrived with the family and was then suppressed one directory at a time -- never
+# because anyone decided lines should be capped.
+#
+# `.claude/rules/engineering.md` already settles it: lint is for correctness and
+# security, and "anything a formatter can decide" is off. `line-length` above is
+# untouched and still drives `ruff format`, so code is still wrapped -- silently, on
+# every edit, instead of failing a commit. In app code E501 only ever fires where the
+# formatter *cannot* split (long string literals, URLs), which is exactly where the
+# report cannot be acted on.
+#
+# The rest of `E` stays: E711/E712/E722/E902/E999 are real correctness checks. Adding a
+# rule family here means checking its members for more cosmetic riders like this one.
+ignore = ["E501"]
+
 [lint.per-file-ignores]
-# CLI / diagnostic tooling: terminal output (T201), terse loop vars (E741), and long
-# regex/format lines (E501) are idiomatic here. These scripts orchestrate trusted
+# CLI / diagnostic tooling: terminal output (T201) and terse loop vars (E741) are
+# idiomatic here. These scripts orchestrate trusted
 # first-party tools (git, ruff, docker) via subprocess, so the bandit
 # subprocess/partial-path/urlopen warnings (S603/S607/S310) are expected.
-"scripts/**/*.py" = ["T201", "E741", "E501", "S603", "S607", "S310"]
+"scripts/**/*.py" = ["T201", "E741", "S603", "S607", "S310"]
 # Skill payload scripts (`.claude/skills/*/`) are CLI tools a skill shells out to and
 # reads the stdout of, so printing is their entire interface. These arrive vendored
 # from devkit, so this line must stay in step with devkit's own ruff.toml.
-".claude/skills/**/*.py" = ["T201", "E741", "E501", "S603", "S607", "S310"]
-# Tests: asserts (S101), long lines, and hardcoded test passwords (S105).
-"tests/**/*.py" = ["E501", "S101", "S105"]
-"scripts/hooks/tests/**/*.py" = ["E501", "S101", "S105"]
+".claude/skills/**/*.py" = ["T201", "E741", "S603", "S607", "S310"]
+# Tests: asserts (S101) and hardcoded test passwords (S105).
+"tests/**/*.py" = ["S101", "S105"]
+"scripts/hooks/tests/**/*.py" = ["S101", "S105"]
 
 [format]
 quote-style = "double"

@@ -5,7 +5,7 @@ because guessing them wrong is worse than leaving them blank.
 
 ## Setup
 
-- [ ] Fill in `.env` from `.env.example` (it is gitignored; nothing works without it)
+- [ ] Copy `.env.example` to `.env` before overriding local paths, credentials, or ports
 - [ ] Confirm `python scripts/sync-devkit.py --list` shows a stamped `DEVKIT_VERSION`
 - [ ] Set `DEVKIT_DIR` in CI so the drift check actually gates — a
       `--check` that prints "nothing to do (skipping)" is checking nothing
@@ -17,9 +17,14 @@ because guessing them wrong is worse than leaving them blank.
 
 ## First real work
 
-- [ ] Replace the placeholder in `sports_betting/` with something that does the job
-- [ ] Delete `tests/test_smoke.py` once real tests exist
+- [ ] Add a higher-coverage provider adapter after choosing the first target sport/league
+- [ ] Add the Football-Data.co.uk historical results/odds bulk importer
+- [ ] Restore bronze snapshots into an operational Postgres schema before model work
 
 ## Archive
 
 <!-- Completed items move here. -->
+
+- [x] Add an idempotent sports schedule/results pipeline with Parquet cataloguing
+- [x] Replace the generated smoke tests with provider, archive, pipeline, and CLI tests
+- [x] Schedule all four free providers with restart-safe throttling and health artifacts

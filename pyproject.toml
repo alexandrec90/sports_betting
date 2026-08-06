@@ -6,11 +6,16 @@ requires-python = ">=3.12"
 dependencies = [
   "sqlalchemy>=2.0",
   "psycopg[binary]>=3.3.4",
+  "httpx>=0.27",
+  "apscheduler>=3.11,<4",
   "pyarrow>=17.0",
   "duckdb>=1.1",
   "boto3>=1.35",
   "pydantic-settings>=2.4",
 ]
+
+[project.scripts]
+sports-betting = "sports_betting.cli:main"
 
 [project.optional-dependencies]
 # Host-only toolchain. Deliberately NOT installed into the container image — it is
@@ -52,4 +57,16 @@ exclude = '^scripts/(hooks/|sync-harness\.py)'
 # Optional at runtime: `notify.py` guards the import and no-ops without it, so the
 # toast dependency is deliberately not installed.
 module = ["win11toast"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+# PyArrow ships no PEP 561 marker or public stubs. Archive behavior is covered by
+# round-trip Parquet tests, including verification and idempotence.
+module = ["pyarrow", "pyarrow.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+# APScheduler 3.x is the stable API used here but does not publish PEP 561 metadata.
+# Scheduler construction and registered trigger intervals are covered by tests.
+module = ["apscheduler", "apscheduler.*"]
 ignore_missing_imports = true

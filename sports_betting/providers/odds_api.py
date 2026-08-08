@@ -12,7 +12,8 @@ import httpx
 
 from sports_betting.providers.thesportsdb import SportsDataProviderError, canonical_payload
 
-BASE_URL = "https://api.theoddsapi.com"
+BASE_URL = "https://api.the-odds-api.com/v4"
+DEFAULT_REGIONS = "us"
 FREE_SPORTS = {
     "basketball_nba": "Basketball",
     "baseball_mlb": "Baseball",
@@ -75,16 +76,24 @@ class OddsApiClient:
         self,
         api_key: str,
         *,
+        regions: str = DEFAULT_REGIONS,
         timeout_seconds: float = 20,
         before_request: Callable[[], None] | None = None,
         client: httpx.Client | None = None,
     ):
         if not api_key.strip():
             raise ValueError("The Odds API key cannot be blank")
+        if not regions.strip():
+            raise ValueError("The Odds API requires at least one bookmaker region")
         self._key = api_key.strip()
+        self._regions = regions.strip()
         self._before_request = before_request or (lambda: None)
         self._client = client or httpx.Client(timeout=timeout_seconds)
         self._owns_client = client is None
+
+    def _redact(self, text: str) -> str:
+        """The key travels in the query string, so it reaches httpx error text and URLs."""
+        return text.replace(self._key, "***")
 
     def close(self) -> None:
         if self._owns_client:
@@ -102,16 +111,22 @@ class OddsApiClient:
         self._before_request()
         try:
             response = self._client.get(
-                f"{BASE_URL}/odds/",
-                params={"sport_key": sport_key, "markets": "h2h", "oddsFormat": "decimal"},
-                headers={"x-api-key": self._key},
+                f"{BASE_URL}/sports/{sport_key}/odds/",
+                params={
+                    "apiKey": self._key,
+                    "regions": self._regions,
+                    "markets": "h2h",
+                    "oddsFormat": "decimal",
+                },
             )
             response.raise_for_status()
             payload = response.json()
         except (httpx.HTTPError, ValueError) as exc:
+            # `from None`: the chained httpx error carries the key-bearing URL.
             raise SportsDataProviderError(
-                "The Odds API request failed; verify the key, free-plan sports, and daily quota"
-            ) from exc
+                "The Odds API request failed; verify the key, free-plan sports, and daily quota "
+                f"({self._redact(str(exc))})"
+            ) from None
         if not isinstance(payload, list):
             raise SportsDataProviderError("unexpected The Odds API response shape")
         seen_at = observed_at or datetime.now(UTC)

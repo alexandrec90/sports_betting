@@ -1,10 +1,12 @@
 from datetime import UTC, date, datetime
 
 import httpx
+import pytest
 
 from sports_betting.providers.balldontlie import BallDontLieClient
 from sports_betting.providers.football_data import FootballDataClient
 from sports_betting.providers.odds_api import OddsApiClient
+from sports_betting.providers.thesportsdb import SportsDataProviderError
 
 OBSERVED = datetime(2026, 8, 5, 12, tzinfo=UTC)
 
@@ -86,10 +88,15 @@ def test_balldontlie_normalizes_mlb_nested_runs_and_epl_team_order():
 
 def test_odds_api_uses_free_moneyline_contract_and_never_archives_key():
     def handler(request: httpx.Request) -> httpx.Response:
-        assert request.url.path == "/odds/"
-        assert request.headers["x-api-key"] == "private-key"
+        # Regression: the client previously called api.theoddsapi.com/odds/ with an
+        # x-api-key header and no regions, which is not the v4 contract. Every scheduled
+        # run failed with "unexpected The Odds API response shape".
+        assert request.url.host == "api.the-odds-api.com"
+        assert request.url.path == "/v4/sports/basketball_nba/odds/"
+        assert "x-api-key" not in request.headers
         assert dict(request.url.params) == {
-            "sport_key": "basketball_nba",
+            "apiKey": "private-key",  # pragma: allowlist secret - dummy, MockTransport only
+            "regions": "us",
             "markets": "h2h",
             "oddsFormat": "decimal",
         }
@@ -114,3 +121,37 @@ def test_odds_api_uses_free_moneyline_contract_and_never_archives_key():
 
     assert snapshots[0].market == "h2h"
     assert "private-key" not in snapshots[0].payload_json
+
+
+def test_odds_api_forwards_configured_regions():
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request.url.params["regions"])
+        return httpx.Response(200, json=[])
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    OddsApiClient("private-key", regions="uk,eu", client=client).fetch("baseball_mlb")
+
+    assert seen == ["uk,eu"]
+
+
+def test_odds_api_blank_regions_is_rejected():
+    with pytest.raises(ValueError, match="region"):
+        OddsApiClient("private-key", regions="  ")
+
+
+def test_odds_api_error_redacts_the_key_now_that_it_travels_in_the_query_string():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(401, json={"message": "unauthorized"})
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+
+    with pytest.raises(SportsDataProviderError) as caught:
+        OddsApiClient("private-key", client=client).fetch("basketball_nba")
+
+    message = str(caught.value)
+    assert "private-key" not in message
+    assert "401" in message  # the status still reaches the health file
+    # `from None` keeps the key-bearing httpx URL out of the chained traceback too.
+    assert caught.value.__cause__ is None

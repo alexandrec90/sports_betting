@@ -16,9 +16,11 @@ class Settings(BaseSettings):
     sportsdb_sports: str = "Soccer,Baseball,Basketball,Ice Hockey,American Football"
     football_data_api_key: str = ""
     balldontlie_api_key: str = ""
-    balldontlie_sports: str = "nba,nfl,mlb,epl"
+    # EPL /matches needs a paid ALL-STAR plan; only nba/nfl/mlb games are free.
+    balldontlie_sports: str = "nba,nfl,mlb"
     the_odds_api_key: str = ""
     the_odds_api_sports: str = "basketball_nba,baseball_mlb"
+    the_odds_api_regions: str = "us"
     collection_interval_hours: int = Field(default=6, ge=6)
     scheduler_health_file: Path = Path("logs/scheduler-health.json")
     provider_quota_file: Path = Path("logs/provider-quotas.json")

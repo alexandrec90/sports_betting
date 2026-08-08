@@ -33,6 +33,18 @@ class JobOutcome:
     detail: str = ""
 
 
+def _partial_outcome(fetched: int, added: int, failures: list[str]) -> JobOutcome:
+    """One unavailable sport must not discard the sports that did collect.
+
+    A single try/except around the whole sport loop reported `error` with 0/0 even when
+    most sports had already been written, which hid a permanent per-sport outage.
+    """
+    if not failures:
+        return JobOutcome("ok", fetched, added)
+    status = "error" if fetched == 0 and added == 0 else "partial"
+    return JobOutcome(status, fetched, added, detail="; ".join(failures))
+
+
 class HealthStore:
     def __init__(self, path: Path | str):
         self.path = Path(path)
@@ -106,18 +118,22 @@ class CollectionJobs:
     def thesportsdb(self) -> JobOutcome:
         def collect() -> JobOutcome:
             fetched = added = 0
+            failures: list[str] = []
             with TheSportsDbClient(
                 self.settings.sportsdb_api_key,
                 timeout_seconds=self.settings.sportsdb_timeout_seconds,
                 before_request=self.thesportsdb_gate,
             ) as client:
                 for sport in self.settings.csv(self.settings.sportsdb_sports):
-                    for day in self.collection_days():
-                        snapshots = client.fetch_day(day, sport=sport)
-                        result = self.events.write(snapshots)
-                        fetched += len(snapshots)
-                        added += result.snapshots_added
-            return JobOutcome("ok", fetched, added)
+                    try:
+                        for day in self.collection_days():
+                            snapshots = client.fetch_day(day, sport=sport)
+                            result = self.events.write(snapshots)
+                            fetched += len(snapshots)
+                            added += result.snapshots_added
+                    except Exception as exc:
+                        failures.append(f"{sport}: {type(exc).__name__}: {exc}")
+            return _partial_outcome(fetched, added, failures)
 
         return self._run("thesportsdb", collect)
 
@@ -127,18 +143,22 @@ class CollectionJobs:
 
         def collect() -> JobOutcome:
             fetched = added = 0
+            failures: list[str] = []
             with BallDontLieClient(
                 self.settings.balldontlie_api_key,
                 timeout_seconds=self.settings.sportsdb_timeout_seconds,
                 before_request=self.balldontlie_gate,
             ) as client:
                 for sport in self.settings.csv(self.settings.balldontlie_sports):
-                    for day in self.collection_days():
-                        snapshots = client.fetch_day(day, sport=sport)
-                        result = self.events.write(snapshots)
-                        fetched += len(snapshots)
-                        added += result.snapshots_added
-            return JobOutcome("ok", fetched, added)
+                    try:
+                        for day in self.collection_days():
+                            snapshots = client.fetch_day(day, sport=sport)
+                            result = self.events.write(snapshots)
+                            fetched += len(snapshots)
+                            added += result.snapshots_added
+                    except Exception as exc:
+                        failures.append(f"{sport}: {type(exc).__name__}: {exc}")
+            return _partial_outcome(fetched, added, failures)
 
         return self._run("balldontlie", collect)
 
@@ -148,17 +168,23 @@ class CollectionJobs:
 
         def collect() -> JobOutcome:
             fetched = added = 0
+            failures: list[str] = []
             with OddsApiClient(
                 self.settings.the_odds_api_key,
+                regions=self.settings.the_odds_api_regions,
                 timeout_seconds=self.settings.sportsdb_timeout_seconds,
                 before_request=self.odds_gate,
             ) as client:
                 for sport in self.settings.csv(self.settings.the_odds_api_sports):
-                    snapshots = client.fetch(sport)
+                    try:
+                        snapshots = client.fetch(sport)
+                    except Exception as exc:
+                        failures.append(f"{sport}: {type(exc).__name__}: {exc}")
+                        continue
                     result = self.odds.write(snapshots)
                     fetched += len(snapshots)
                     added += result.snapshots_added
-            return JobOutcome("ok", fetched, added)
+            return _partial_outcome(fetched, added, failures)
 
         return self._run("the-odds-api", collect)
 

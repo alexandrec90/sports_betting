@@ -15,15 +15,22 @@ depending on a provider, and preserve the provider name and raw response snapsho
    API and a clean upgrade path; use this before relying on scraped soccer sites.
    Sources: <https://www.football-data.org/pricing> and
    <https://www.football-data.org/documentation/quickstart>
-3. **BALLDONTLIE (implemented and scheduled):** free games endpoints for NBA, NFL, MLB,
-   and EPL at 5 requests/minute after signup. Paid sport plans currently start at US$9.99/month;
-   deeper statistics, injuries, and odds are paid features.
-   Sources: <https://www.balldontlie.io/account/> and <https://docs.balldontlie.io/>
+3. **BALLDONTLIE (implemented and scheduled):** free games endpoints for NBA, NFL, and MLB
+   at 5 requests/minute after signup. Paid sport plans currently start at US$9.99/month;
+   deeper statistics, injuries, and odds are paid features. **EPL is not free:** the
+   `/epl/v2/matches` endpoint requires ALL-STAR or higher (re-checked 2026-08-08), so `epl`
+   is not in the default `BALLDONTLIE_SPORTS`. Free EPL access is limited to teams, rosters,
+   players, and standings — none of which is a fixture feed.
+   Sources: <https://www.balldontlie.io/account/>, <https://docs.balldontlie.io/>, and
+   <https://epl.balldontlie.io/>
 4. **The Odds API (implemented and scheduled):** the current free plan is 25 calls/day and
    only NBA/MLB moneylines; US$29/month adds 25 sports, spreads, and totals. Archive every odds
    observation with its retrieval timestamp—using closing odds discovered after an event in a
-   backtest would leak future information.
-   Sources: <https://theoddsapi.com/pricing> and <https://theoddsapi.com/docs/>
+   backtest would leak future information. Requests go to `https://api.the-odds-api.com/v4`
+   as `GET /sports/{sport_key}/odds/`, authenticated with an `apiKey` **query parameter**
+   (not a header), and `regions` is required — see `THE_ODDS_API_REGIONS`.
+   Sources: <https://the-odds-api.com/#get-access> and
+   <https://the-odds-api.com/liveapi/guides/v4/>
 
 League-operated NHL/MLB endpoints and ESPN endpoints can be useful for research, but their
 public interfaces are undocumented or do not offer a clear data licence/SLA. Treat them as
@@ -37,7 +44,7 @@ accounts, then put the keys in the checkout's uncommitted `.env`:
 
 - football-data.org: <https://www.football-data.org/client/register> → `FOOTBALL_DATA_API_KEY`
 - BALLDONTLIE: <https://app.balldontlie.io/signup> → `BALLDONTLIE_API_KEY`
-- The Odds API: <https://theoddsapi.com/start> → `THE_ODDS_API_KEY`
+- The Odds API: <https://the-odds-api.com/#get-access> → `THE_ODDS_API_KEY`
 
 The scheduler remains useful before these are set: those jobs report `skipped`, and
 TheSportsDB continues collecting. Keys belong only in `.env`; they are removed from raw
@@ -85,7 +92,7 @@ to non-commercial use unless written permission is obtained.
 wants which sports. Jobs are single-writer and run every six hours:
 
 - football-data.org: two date requests/run, paced at least 7 seconds apart versus 10/min free.
-- BALLDONTLIE: two dates for each of four free sports, paced 13 seconds apart versus 5/min.
+- BALLDONTLIE: two dates for each of three free sports, paced 13 seconds apart versus 5/min.
 - TheSportsDB: two dates per configured sport, conservatively paced 2 seconds apart.
 - The Odds API: NBA and MLB once/run, eight planned calls/day. A persistent 20/day safety
   budget stays below the provider's 25/day free limit even across process restarts.

@@ -40,6 +40,35 @@ are recorded as `skipped`, not failures. Outcomes live in `logs/scheduler-health
 restart-safe Odds API safety budget lives in `logs/provider-quotas.json`. Keep only one
 collector instance running against an archive root.
 
+Ask whether collection is actually working — the command exits non-zero when any job needs
+attention, so it works as a container healthcheck or a cron guard:
+
+```bash
+uv run sports-betting health
+uv run sports-betting health --quiet   # only the jobs that need attention
+```
+
+```
+the-odds-api     failing    last ok 3d ago     wrote 3d ago     runs 12 fail 4
+                 └─ basketball_nba: 401 Unauthorized …
+```
+
+Each job is classified from its recorded history rather than its last run alone:
+
+| status | meaning |
+| --- | --- |
+| `ok` | collecting normally |
+| `failing` | the last run errored; `consecutive_failures` says for how long |
+| `stale` | no success in 2.5× the job's own interval — it stopped firing |
+| `degraded` | it collected, but one configured sport failed (see `last_error`) |
+| `idle` | succeeding but storing nothing for three runs — a 200 OK that collects zero |
+| `skipped` | no API key configured; not counted as a run either way |
+| `never-run` | scheduled but has not completed a run yet |
+
+History survives restarts, so an open failure streak is not erased by bouncing the container,
+and `last_success`/`last_wrote` are kept separately from the last run — an outage no longer
+erases the record of when the job last worked.
+
 The default local archive is `../data-lake/data/archive`. Each provider response becomes a
 content-addressed snapshot in Hive-partitioned Parquet, so an unchanged re-fetch is a no-op
 while a schedule later becoming a final result remains auditable. The catalog is written to

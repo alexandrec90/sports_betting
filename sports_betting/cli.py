@@ -11,6 +11,7 @@ from pathlib import Path
 
 from sports_betting.archive import EventArchive
 from sports_betting.config import get_settings
+from sports_betting.health import HealthStore
 from sports_betting.historical import HistoricalImporters
 from sports_betting.pipeline import ingest_events
 from sports_betting.providers import TheSportsDbClient
@@ -42,6 +43,10 @@ def build_parser() -> argparse.ArgumentParser:
         default="all",
     )
     subparsers.add_parser("serve", help="run the persistent free-tier collection scheduler")
+    health = subparsers.add_parser("health", help="is collection actually pulling data?")
+    health.add_argument(
+        "--quiet", action="store_true", help="print only the problem jobs, not every job"
+    )
     bulk = subparsers.add_parser("bulk-import", help="import free historical data dumps")
     bulk_sources = bulk.add_subparsers(dest="bulk_source", required=True)
     football = bulk_sources.add_parser("football-data", help="soccer results and bookmaker odds")
@@ -86,12 +91,65 @@ def _write_report(payload: dict) -> None:
     REPORT_PATH.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
 
 
+def _age(stamp: str | None, *, now: datetime | None = None) -> str:
+    """Human "how long ago", because a raw ISO timestamp does not answer 'is this stale'."""
+    if not stamp:
+        return "never"
+    try:
+        moment = datetime.fromisoformat(str(stamp))
+    except ValueError:
+        return "unknown"
+    seconds = int(((now or datetime.now(UTC)) - moment).total_seconds())
+    if seconds < 0:
+        return "just now"
+    for size, unit in ((86400, "d"), (3600, "h"), (60, "m")):
+        if seconds >= size:
+            return f"{seconds // size}{unit} ago"
+    return f"{seconds}s ago"
+
+
+def health_lines(report: dict, *, quiet: bool = False, now: datetime | None = None) -> list[str]:
+    """Render a health report as terminal lines, worst first."""
+    order = {"failing": 0, "stale": 1, "degraded": 2, "idle": 3, "never-run": 4, "skipped": 5}
+    rows = sorted(report["jobs"].items(), key=lambda row: (order.get(row[1]["status"], 9), row[0]))
+    lines = []
+    for name, entry in rows:
+        status = entry["status"]
+        if quiet and status == "ok":
+            continue
+        lines.append(
+            f"{name:<16} {status:<10} "
+            f"last ok {_age(entry.get('last_success'), now=now):<10} "
+            f"wrote {_age(entry.get('last_wrote'), now=now):<10} "
+            f"runs {entry.get('runs', 0)} fail {entry.get('failures', 0)}"
+        )
+        reason = entry.get("last_error") or entry.get("skip_reason")
+        if reason and status != "ok":
+            lines.append(f"{'':<16} └─ {str(reason)[:160]}")
+    if not lines:
+        lines.append("all jobs ok")
+    return lines
+
+
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
         if args.command == "serve":
             serve()
             return 0
+        if args.command == "health":
+            settings = get_settings()
+            store = HealthStore(settings.scheduler_health_file)
+            if not store.seed():
+                sys.stdout.write(
+                    f"health: no readable artifact at {settings.scheduler_health_file}; "
+                    "has the scheduler run?\n"
+                )
+                return 1
+            report = store.report()
+            sys.stdout.write("\n".join(health_lines(report, quiet=args.quiet)) + "\n")
+            sys.stdout.write(f"artifact: {settings.scheduler_health_file}\n")
+            return 0 if report["ok"] else 1
         if args.command == "collect":
             jobs = CollectionJobs(get_settings())
             function = {

@@ -3,6 +3,7 @@ import json
 import pytest
 
 from sports_betting.config import Settings
+from sports_betting.health import status_for
 from sports_betting.providers.thesportsdb import SportsDataProviderError
 from sports_betting.scheduler import CollectionJobs, _partial_outcome, build_scheduler
 
@@ -22,12 +23,17 @@ def test_keyed_jobs_skip_without_credentials_and_write_health(tmp_path):
     assert jobs.balldontlie().status == "skipped"
     assert jobs.the_odds_api().status == "skipped"
 
-    health = json.loads(settings.scheduler_health_file.read_text())
-    assert {name: row["status"] for name, row in health.items()} == {
+    health = json.loads(settings.scheduler_health_file.read_text())["jobs"]
+    assert {name: row["last_status"] for name, row in health.items()} == {
         "football-data": "skipped",
         "balldontlie": "skipped",
         "the-odds-api": "skipped",
     }
+    # A missing key is not a run. If skips counted, an unconfigured provider would look like
+    # a healthy one and would reset the streak of a provider that is genuinely failing.
+    assert all(row["runs"] == 0 for row in health.values())
+    assert all(row["last_run"] is None for row in health.values())
+    assert {status_for(row) for row in health.values()} == {"skipped"}
 
 
 def test_scheduler_registers_all_jobs_at_safe_interval(tmp_path):
@@ -101,8 +107,15 @@ def test_one_unavailable_sport_no_longer_discards_the_sports_that_worked(tmp_pat
     assert "epl" in outcome.detail
     assert "nba" not in outcome.detail
 
-    health = json.loads(settings.scheduler_health_file.read_text())
-    assert health["balldontlie"]["status"] == "partial"
+    entry = json.loads(settings.scheduler_health_file.read_text())["jobs"]["balldontlie"]
+    assert entry["last_status"] == "partial"
+    assert status_for(entry) == "degraded"
+    # A partial run still collected, so it must not read as an outage...
+    assert entry["consecutive_failures"] == 0
+    assert entry["last_success"] is not None
+    # ...but the failing sport stays visible instead of being discarded.
+    assert "epl" in entry["last_error"]
+    assert entry["degraded_runs"] == 1
 
 
 def _snapshot(external_id: str):

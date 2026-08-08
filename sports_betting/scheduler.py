@@ -2,17 +2,15 @@
 
 from __future__ import annotations
 
-import json
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
-from pathlib import Path
-from typing import Any
 
 from apscheduler.executors.pool import ThreadPoolExecutor
 from apscheduler.schedulers.blocking import BlockingScheduler
 
 from sports_betting.archive import EventArchive, OddsArchive
 from sports_betting.config import Settings, get_settings
+from sports_betting.health import HealthStore
 from sports_betting.historical import HistoricalImporters
 from sports_betting.providers import (
     BallDontLieClient,
@@ -45,28 +43,6 @@ def _partial_outcome(fetched: int, added: int, failures: list[str]) -> JobOutcom
     return JobOutcome(status, fetched, added, detail="; ".join(failures))
 
 
-class HealthStore:
-    def __init__(self, path: Path | str):
-        self.path = Path(path)
-
-    def record(self, job: str, outcome: JobOutcome) -> None:
-        payload = self._read()
-        payload[job] = {**asdict(outcome), "updated_at": datetime.now(UTC).isoformat()}
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        temporary = self.path.with_suffix(self.path.suffix + ".tmp")
-        temporary.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
-        temporary.replace(self.path)
-
-    def _read(self) -> dict[str, Any]:
-        if not self.path.is_file():
-            return {}
-        try:
-            value = json.loads(self.path.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            return {}
-        return value if isinstance(value, dict) else {}
-
-
 class CollectionJobs:
     """Provider jobs. The scheduler serializes calls so catalog writes never race."""
 
@@ -75,6 +51,8 @@ class CollectionJobs:
         self.events = EventArchive(settings.archive_root)
         self.odds = OddsArchive(settings.archive_root)
         self.health = HealthStore(settings.scheduler_health_file)
+        # Carry a previous process's history across the restart; see HealthStore.seed.
+        self.health.seed()
         ledger = QuotaLedger(settings.provider_quota_file)
         self.football_gate = ProviderThrottle("football-data.org", min_interval_seconds=7)
         self.thesportsdb_gate = ProviderThrottle("thesportsdb", min_interval_seconds=2)
@@ -246,16 +224,20 @@ class CollectionJobs:
         return outcomes
 
     def _run(self, name: str, function) -> JobOutcome:
+        # Only the job body is guarded. Recording used to sit inside this try, so a failure
+        # while writing the artifact re-entered _finish from the except branch and raised a
+        # second time, killing the APScheduler job outright.
         try:
-            return self._finish(name, function())
+            outcome = function()
         except Exception as exc:
-            return self._finish(
-                name,
-                JobOutcome("error", detail=f"{type(exc).__name__}: {exc}"),
-            )
+            detail = f"{type(exc).__name__}: {exc}"
+            return self._finish(name, JobOutcome("error", detail=detail), exc)
+        return self._finish(name, outcome)
 
-    def _finish(self, name: str, outcome: JobOutcome) -> JobOutcome:
-        self.health.record(name, outcome)
+    def _finish(
+        self, name: str, outcome: JobOutcome, exc: BaseException | None = None
+    ) -> JobOutcome:
+        self.health.record(name, outcome, exc)
         return outcome
 
 
@@ -282,6 +264,7 @@ def build_scheduler(settings: Settings | None = None) -> BlockingScheduler:
             name=name,
             next_run_time=datetime.now(UTC) + timedelta(seconds=minute),
         )
+        jobs.health.record_schedule(name, interval * 3600)
     if resolved.bulk_refresh_enabled:
         scheduler.add_job(
             jobs.historical_bulk,
@@ -291,6 +274,7 @@ def build_scheduler(settings: Settings | None = None) -> BlockingScheduler:
             name="historical-bulk",
             next_run_time=datetime.now(UTC) + timedelta(minutes=45),
         )
+        jobs.health.record_schedule("historical-bulk", 7 * 24 * 3600)
     return scheduler
 
 

@@ -15,7 +15,7 @@ repos:
   # already cloned devkit at the rev below, so the version is written down here instead of
   # depending on a variable in whoever's shell.
   - repo: https://github.com/alexandrec90/devkit
-    rev: v0.6.0
+    rev: v0.7.0
     hooks:
       # Fails on a manifest the harness would otherwise ignore: unparseable TOML (the
       # loader falls back to neutral defaults rather than erroring), a path prefix missing

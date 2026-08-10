@@ -95,6 +95,27 @@ See `.claude/rules/data-lake.md`. The two rules that must never be relaxed: the
 bucket is **private**, and the lake is **bronze, not a source of truth** — the hot
 path never reads it directly.
 
+`ARCHIVE_ROOT` writes into the sibling data-lake checkout's `data/` tree, which is the
+**pooled** bronze tier and also **local disk** — pooling is not offloading. `archive-sync`
+is the mirror (upload → verify → prune); see the README. Three things to know before
+touching it:
+
+- The sibling `data-lake` package is **not a declared dependency — not a base one, and not
+  an extra either.** CI checks out this repo alone and the Docker build context is `.`, so
+  neither has a sibling, and uv re-reads every `[tool.uv.sources]` path *before* it selects
+  extras, so an extra does not hide it: the sync fails outright. Install it on a host with
+  `uv pip install -e ../data-lake[archive]` (`uv sync` prunes it; `uv run` does not).
+  `tests/test_repo_policy.py` fails if a path source reappears. Import it lazily behind that
+  hint; a module-scope import turns its absence into a crash in the one place it is never
+  needed. Any test needing the sibling must `importorskip` **and** be backed by a contract
+  test that runs without it.
+- `_catalog/<dataset>.json` is a **shared namespace with the lake**, so manifests use its
+  `DatasetManifest` key names. `sports_betting/archive/manifest.py` is the single writer of
+  that shape and validates on every write — do not hand-roll a manifest dict.
+- Prune deletes **source artifacts only, after reading the uploaded copy back in the same
+  run**. Never widen it to Parquet (the next import re-opens it) and never let a delete
+  outrun its verification.
+
 ### Québec wagering boundary
 
 This checkout is operated from Québec. Treat it as a **data/research application only**

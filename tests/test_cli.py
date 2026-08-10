@@ -52,6 +52,84 @@ def test_main_writes_parseable_failure_artifact(monkeypatch, tmp_path, capsys):
     assert str(report) in capsys.readouterr().out
 
 
+def test_archive_failures_land_in_the_archive_artifact_not_the_ingest_one(
+    monkeypatch, tmp_path, capsys
+):
+    """A sync failure must not overwrite the last ingest report — they answer different questions."""
+    ingest = tmp_path / "ingest.json"
+    archive = tmp_path / "archive.json"
+    monkeypatch.setattr(cli, "REPORT_PATH", ingest)
+    monkeypatch.setattr(cli, "ARCHIVE_REPORT_PATH", archive)
+    monkeypatch.setattr(cli, "get_settings", lambda: (_ for _ in ()).throw(RuntimeError("boom")))
+
+    assert cli.main(["archive-sync"]) == 1
+
+    assert json.loads(archive.read_text())["error"] == "boom"
+    assert not ingest.exists()
+    assert str(archive) in capsys.readouterr().out
+
+
+def test_archive_sync_reports_an_unconfigured_backend_rather_than_pretending(
+    monkeypatch, tmp_path, capsys
+):
+    from sports_betting.config import Settings
+
+    monkeypatch.setattr(cli, "ARCHIVE_REPORT_PATH", tmp_path / "archive.json")
+    monkeypatch.setattr(
+        cli, "get_settings", lambda: Settings(_env_file=None, archive_root=tmp_path)
+    )
+
+    assert cli.main(["archive-sync"]) == 1
+    assert "FAILED" in capsys.readouterr().out
+
+
+def test_archive_recatalog_needs_no_mirror(monkeypatch, tmp_path, capsys):
+    """The checkout most likely to hold old-shape manifests is the one with no backend set."""
+    from sports_betting.config import Settings
+
+    monkeypatch.setattr(cli, "ARCHIVE_REPORT_PATH", tmp_path / "archive.json")
+    monkeypatch.setattr(
+        cli, "get_settings", lambda: Settings(_env_file=None, archive_root=tmp_path)
+    )
+
+    assert cli.main(["archive-recatalog"]) == 0
+    assert "rebuilt 0 manifest(s)" in capsys.readouterr().out
+
+
+def test_sync_lines_leads_with_the_status_line():
+    report = {
+        "backend": "s3",
+        "dry_run": False,
+        "scanned": 40,
+        "uploaded": 38,
+        "already_present": 2,
+        "pruned": 0,
+        "planned": 0,
+        "freed_bytes": 0,
+        "failures": [],
+    }
+    assert cli.sync_lines(report) == ["mirrored 38 object(s) to s3; 2 already present, 40 scanned"]
+
+
+def test_sync_lines_reports_freed_space_and_truncates_long_failure_lists():
+    report = {
+        "backend": "s3",
+        "dry_run": False,
+        "scanned": 30,
+        "uploaded": 30,
+        "already_present": 0,
+        "pruned": 12,
+        "planned": 0,
+        "freed_bytes": 3 * 1024 * 1024 * 1024,
+        "failures": [{"key": f"k{n}", "status": "failed", "detail": "nope"} for n in range(14)],
+    }
+
+    lines = cli.sync_lines(report)
+
+    assert "pruned 12 verified source artifact(s), 3072.0 MB" in lines[1]
+    assert lines[-1] == "  … 4 more, see the artifact"
+
+
 def _health_settings(tmp_path):
     from sports_betting.config import Settings
 

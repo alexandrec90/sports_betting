@@ -17,6 +17,29 @@ dependencies = [
 [project.scripts]
 sports-betting = "sports_betting.cli:main"
 
+# The shared lake package — `data_lake.archive.store`, the object store that
+# `sports_betting.archive.sync` mirrors this checkout's bronze tree into — is
+# deliberately NOT declared here, in any form. It lives in a sibling checkout, so the
+# only way to declare it is a `[tool.uv.sources]` path entry, and uv re-reads the
+# metadata of every path source on every `uv sync` — to decide whether the lock is
+# still fresh — *before* it looks at which extras were requested. An absent sibling
+# therefore fails the sync outright:
+#
+#   error: Failed to generate package metadata for `data-lake==0.1.0 @ editable+../data-lake`
+#     Caused by: Distribution not found at: .../data-lake
+#
+# Putting it behind an extra does not help, and neither does a dependency-group: the
+# failure happens before extra selection, and the vendored CI action passes
+# `--all-extras --all-groups` anyway. CI checks out this repo alone and the Docker build
+# context is `.`, so neither has a sibling — which is every environment that runs
+# `uv sync` unattended. Install it separately on a host that has the sibling:
+#
+#   uv pip install -e ../data-lake[archive]
+#
+# `tests/test_repo_policy.py` holds this line: it fails if a path source reappears.
+# Every import of the package is lazy and behind that hint (`archive/sync.py`), so a
+# bare clone still builds, tests, and collects with no sibling present.
+
 [project.optional-dependencies]
 # Host-only toolchain. Deliberately NOT installed into the container image — it is
 # several hundred MB of tooling the runtime never imports.
@@ -63,6 +86,14 @@ ignore_missing_imports = true
 # PyArrow ships no PEP 561 marker or public stubs. Archive behavior is covered by
 # round-trip Parquet tests, including verification and idempotence.
 module = ["pyarrow", "pyarrow.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+# The sibling lake package ships no `py.typed` marker, and it is undeclared here, so it
+# is absent from CI altogether — mypy must neither demand stubs for it nor fail when the
+# import cannot be resolved at all. `sync.py` keeps every use behind a lazy import
+# and a narrow local Protocol, so nothing here depends on its inferred types.
+module = ["data_lake", "data_lake.*"]
 ignore_missing_imports = true
 
 [[tool.mypy.overrides]]

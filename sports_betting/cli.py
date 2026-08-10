@@ -9,7 +9,9 @@ from dataclasses import asdict
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
-from sports_betting.archive import EventArchive
+from sports_betting.archive import ArchiveSync, EventArchive, restore_sources, store_for
+from sports_betting.archive.recatalog import rebuild_catalogs
+from sports_betting.archive.sync import DEFAULT_MAX_OBJECT_BYTES
 from sports_betting.config import get_settings
 from sports_betting.health import HealthStore
 from sports_betting.historical import HistoricalImporters
@@ -18,6 +20,7 @@ from sports_betting.providers import TheSportsDbClient
 from sports_betting.scheduler import CollectionJobs, serve
 
 REPORT_PATH = Path("logs/ingest-events.json")
+ARCHIVE_REPORT_PATH = Path("logs/archive-ops.json")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -62,6 +65,27 @@ def build_parser() -> argparse.ArgumentParser:
     statsbomb.add_argument("--season-id", type=int, required=True)
     statsbomb.add_argument("--max-matches", type=int)
     subparsers.add_parser("statsbomb-list", help="list importable competition and season IDs")
+    sync = subparsers.add_parser(
+        "archive-sync", help="mirror the bronze archive to the shared object store"
+    )
+    sync.add_argument(
+        "--prune",
+        action="store_true",
+        help="delete each verified local source artifact (never the Parquet)",
+    )
+    sync.add_argument(
+        "--dry-run", action="store_true", help="report what would be uploaded and freed"
+    )
+    sync.add_argument(
+        "--max-object-mb",
+        type=int,
+        default=DEFAULT_MAX_OBJECT_BYTES // (1024 * 1024),
+        help="skip objects above this size (mirroring peaks at ~2x an object's size)",
+    )
+    subparsers.add_parser("archive-restore", help="pull pruned source artifacts back locally")
+    subparsers.add_parser(
+        "archive-recatalog", help="rewrite _catalog manifests into the shared lake shape"
+    )
     return parser
 
 
@@ -86,9 +110,32 @@ def _date_range(args: argparse.Namespace) -> tuple[date, date]:
     return yesterday, yesterday
 
 
-def _write_report(payload: dict) -> None:
-    REPORT_PATH.parent.mkdir(parents=True, exist_ok=True)
-    REPORT_PATH.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+def _write_report(payload: dict, path: Path = REPORT_PATH) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+
+
+def sync_lines(report: dict) -> list[str]:
+    """Terminal summary for an archive-sync run: a status line, never the whole outcome list.
+
+    The per-object detail belongs in the artifact — a prune over a full StatsBomb import is
+    thousands of rows, and streaming those past an operator buries the one line that matters.
+    """
+    freed_mb = report["freed_bytes"] / (1024 * 1024)
+    verb = "would mirror" if report["dry_run"] else "mirrored"
+    lines = [
+        f"{verb} {report['uploaded']} object(s) to {report['backend']}; "
+        f"{report['already_present']} already present, {report['scanned']} scanned"
+    ]
+    if report["dry_run"]:
+        lines.append(f"planned {report['planned']} object(s)")
+    if report["pruned"] or report["freed_bytes"]:
+        lines.append(f"pruned {report['pruned']} verified source artifact(s), {freed_mb:.1f} MB")
+    for failure in report["failures"][:10]:
+        lines.append(f"  {failure['status']:<9} {failure['key']}: {failure['detail'][:120]}")
+    if len(report["failures"]) > 10:
+        lines.append(f"  … {len(report['failures']) - 10} more, see the artifact")
+    return lines
 
 
 def _age(stamp: str | None, *, now: datetime | None = None) -> str:
@@ -133,10 +180,39 @@ def health_lines(report: dict, *, quiet: bool = False, now: datetime | None = No
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    report_path = ARCHIVE_REPORT_PATH if args.command.startswith("archive-") else REPORT_PATH
     try:
         if args.command == "serve":
             serve()
             return 0
+        if args.command == "archive-recatalog":
+            settings = get_settings()
+            # Needs no store: manifests are derived from local Parquet, and a checkout with
+            # no mirror configured is exactly the one most likely to still hold old-shape
+            # manifests. Re-run archive-sync afterwards to push the rewritten copies.
+            rebuilt = rebuild_catalogs(settings.archive_root)
+            payload = {"ok": True, "rebuilt": rebuilt, "root": str(settings.archive_root)}
+            _write_report(payload, report_path)
+            sys.stdout.write(f"rebuilt {len(rebuilt)} manifest(s): {', '.join(rebuilt) or '-'}\n")
+            sys.stdout.write(f"artifact: {report_path}\n")
+            return 0
+        if args.command in {"archive-sync", "archive-restore"}:
+            settings = get_settings()
+            object_store = store_for(settings)
+            if args.command == "archive-restore":
+                sync_summary = restore_sources(settings.archive_root, object_store)
+            else:
+                sync_summary = ArchiveSync(
+                    settings.archive_root,
+                    object_store,
+                    backend=settings.archive_backend,
+                    max_object_bytes=args.max_object_mb * 1024 * 1024,
+                ).run(prune=args.prune, dry_run=args.dry_run)
+            payload = sync_summary.as_dict()
+            _write_report(payload, report_path)
+            sys.stdout.write("\n".join(sync_lines(payload)) + "\n")
+            sys.stdout.write(f"artifact: {report_path}\n")
+            return 0 if payload["ok"] else 1
         if args.command == "health":
             settings = get_settings()
             store = HealthStore(settings.scheduler_health_file)
@@ -233,6 +309,6 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     except Exception as exc:
         payload = {"ok": False, "error_type": type(exc).__name__, "error": str(exc)}
-        _write_report(payload)
-        sys.stdout.write(f"{args.command}: FAILED — details in {REPORT_PATH}\n")
+        _write_report(payload, report_path)
+        sys.stdout.write(f"{args.command}: FAILED — details in {report_path}\n")
         return 1

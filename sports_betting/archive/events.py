@@ -12,6 +12,7 @@ from typing import Any
 import pyarrow as pa
 import pyarrow.parquet as pq
 
+from sports_betting.archive.manifest import CATALOG_DIRNAME, build_manifest, partition_entry
 from sports_betting.providers.thesportsdb import EventSnapshot
 
 DATASET = "sports_events"
@@ -76,6 +77,10 @@ class EventArchive:
             self._write_catalog()
         return WriteResult(len(snapshots), added, tuple(written))
 
+    def rebuild_catalog(self) -> None:
+        """Recompute the manifest from the stored partitions. Used by the shape migration."""
+        self._write_catalog()
+
     def _safe_path(self, relative: Path) -> Path:
         root = self.root.resolve()
         path = (root / relative).resolve()
@@ -96,6 +101,8 @@ class EventArchive:
 
     def _write_catalog(self) -> None:
         dataset_root = self._safe_path(Path(DATASET))
+        now = datetime.now(UTC)
+        stamp = now.isoformat()
         partitions: dict[str, dict[str, Any]] = {}
         schema: dict[str, str] = {}
         for path in sorted(dataset_root.rglob("*.parquet")):
@@ -104,22 +111,22 @@ class EventArchive:
                 schema = {field.name: str(field.type) for field in table.schema}
             timestamps = [value for value in table.column("event_ts").to_pylist() if value]
             key = path.relative_to(self.root.resolve()).as_posix()
-            partitions[key] = {
-                "rows": table.num_rows,
-                "min_ts": min(timestamps).isoformat(),
-                "max_ts": max(timestamps).isoformat(),
-            }
+            partitions[key] = partition_entry(
+                rows=table.num_rows,
+                min_ts=min(timestamps).isoformat(),
+                max_ts=max(timestamps).isoformat(),
+                updated_at=stamp,
+            )
 
-        manifest = {
-            "dataset": DATASET,
-            "schema_version": 1,
-            "key_columns": list(NATURAL_KEY),
-            "timestamp_column": "event_ts",
-            "schema": schema,
-            "partitions": partitions,
-            "updated_at": datetime.now(UTC).isoformat(),
-        }
-        path = self._safe_path(Path("_catalog", f"{DATASET}.json"))
+        manifest = build_manifest(
+            dataset=DATASET,
+            ts_column="event_ts",
+            key_columns=NATURAL_KEY,
+            schema=schema,
+            partitions=partitions,
+            updated_at=now,
+        )
+        path = self._safe_path(Path(CATALOG_DIRNAME, f"{DATASET}.json"))
         path.parent.mkdir(parents=True, exist_ok=True)
         temporary = path.with_suffix(".json.tmp")
         temporary.write_text(json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8")

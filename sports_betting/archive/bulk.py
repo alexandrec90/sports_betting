@@ -12,6 +12,8 @@ from pathlib import Path
 
 import pyarrow.parquet as pq
 
+from sports_betting.archive.manifest import CATALOG_DIRNAME, build_manifest, partition_entry
+
 _SAFE_PART = re.compile(r"[^A-Za-z0-9._=-]+")
 
 
@@ -73,8 +75,42 @@ class BulkArchive:
     def source_path(self, artifact: dict) -> Path:
         path = self._safe_path(Path(str(artifact["source_file"])))
         if not path.is_file():
+            # `artifact` usually arrives from the catalog, which is only rewritten by an
+            # import — so a prune that happened since then is recorded in the artifact's own
+            # provenance.json and not yet in the catalog's copy. Consult the file beside the
+            # data, which is the writer of record, before concluding the source is lost.
+            beside = self._provenance_beside(path)
+            if artifact.get("source_pruned") or beside.get("source_pruned"):
+                # A pruned source is recoverable, unlike a source that simply vanished, so
+                # the two must not report identically — an operator who reads "missing"
+                # goes looking for corruption instead of running one restore command.
+                remote = (
+                    artifact.get("source_remote_key")
+                    or beside.get("source_remote_key")
+                    or "the mirror"
+                )
+                raise FileNotFoundError(
+                    f"archived source was pruned to {remote} after verification; "
+                    "restore it with: sports-betting archive-restore"
+                )
             raise FileNotFoundError(f"archived source is missing: {path}")
         return path
+
+    @staticmethod
+    def _provenance_beside(source: Path) -> dict:
+        """The provenance record written alongside an artifact, or `{}` if unreadable."""
+        path = source.parent / "provenance.json"
+        if not path.is_file():
+            return {}
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return {}
+        return payload if isinstance(payload, dict) else {}
+
+    def rebuild_catalog(self, dataset: str) -> None:
+        """Recompute a dataset's manifest from its stored artifacts. Used by the migration."""
+        self._write_catalog(_safe_component(dataset))
 
     def write(
         self,
@@ -163,7 +199,7 @@ class BulkArchive:
         return path
 
     def _catalog_path(self, dataset: str) -> Path:
-        return self._safe_path(Path("_catalog", f"{_safe_component(dataset)}.json"))
+        return self._safe_path(Path(CATALOG_DIRNAME, f"{_safe_component(dataset)}.json"))
 
     def _read_catalog(self, dataset: str) -> dict:
         path = self._catalog_path(dataset)
@@ -189,25 +225,30 @@ class BulkArchive:
                 schemas.setdefault(field.name, str(field.type))
 
         fetched = [datetime.fromisoformat(row["fetched_at"]) for row in artifacts]
-        manifest = {
-            "dataset": dataset,
-            "schema_version": 1,
-            "key_columns": ["source_sha256", "source_row_number"],
-            "timestamp_column": "source_fetched_at",
-            "schema": schemas,
-            "partitions": {
-                row["data_file"]: {
-                    "rows": row["rows"],
-                    "min_ts": row["fetched_at"],
-                    "max_ts": row["fetched_at"],
-                }
+        now = datetime.now(UTC)
+        stamp = now.isoformat()
+        manifest = build_manifest(
+            dataset=dataset,
+            ts_column="source_fetched_at",
+            key_columns=("source_sha256", "source_row_number"),
+            schema=schemas,
+            partitions={
+                row["data_file"]: partition_entry(
+                    rows=row["rows"],
+                    min_ts=row["fetched_at"],
+                    max_ts=row["fetched_at"],
+                    updated_at=stamp,
+                )
                 for row in artifacts
             },
-            "artifacts": artifacts,
-            "min_ts": min(fetched).isoformat() if fetched else None,
-            "max_ts": max(fetched).isoformat() if fetched else None,
-            "updated_at": datetime.now(UTC).isoformat(),
-        }
+            updated_at=now,
+            # Extension keys. `DatasetManifest.from_dict` ignores what it does not know, so
+            # the per-artifact provenance (source URL, licence, sha256, prune state) rides
+            # along in the same object a foreign consumer already has to read.
+            artifacts=artifacts,
+            min_ts=min(fetched).isoformat() if fetched else None,
+            max_ts=max(fetched).isoformat() if fetched else None,
+        )
         self._write_json(self._catalog_path(dataset), manifest)
 
     @staticmethod

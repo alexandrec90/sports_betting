@@ -48,7 +48,9 @@ def test_write_creates_self_describing_catalog(tmp_path):
     manifest = json.loads((tmp_path / "_catalog" / "sports_events.json").read_text())
     assert manifest["dataset"] == "sports_events"
     assert manifest["key_columns"] == ["source", "external_id", "payload_hash"]
-    assert manifest["timestamp_column"] == "event_ts"
+    # `ts_column`, not `timestamp_column`: the shared `_catalog/` namespace is the lake's
+    # DatasetManifest shape. See sports_betting/archive/manifest.py and tests/test_manifest.py.
+    assert manifest["ts_column"] == "event_ts"
     assert manifest["partitions"][result.partitions[0]]["rows"] == 1
     assert "payload_json" in manifest["schema"]
 

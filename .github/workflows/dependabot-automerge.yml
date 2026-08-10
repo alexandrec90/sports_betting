@@ -7,7 +7,7 @@ name: Dependabot auto-merge
 # Anything else — a major touching a runtime or transitive dependency, or an update
 # type Dependabot did not classify — is labelled `needs-manual-merge` and left open.
 #
-# This repo has no branch protection, so GitHub's native auto-merge (which gates on
+# These repos have no branch protection, so GitHub's native auto-merge (which gates on
 # *required* checks) is unavailable. The work is split in two instead:
 #
 #   1. classify runs on the PR itself and labels it from dependabot/fetch-metadata's
@@ -21,12 +21,19 @@ name: Dependabot auto-merge
 # If an auto-mergeable bump fails the gate, nothing happens: the PR simply stays
 # open with its `automerge` label.
 #
-# NB: `workflow_run` only ever runs the copy of this file on main. A
+# NB: `workflow_run` only ever runs the copy of this file on the default branch. A
 # change here is inert until it lands there — including while its own PR is open.
+#
+# THIS FILE IS VENDORED from devkit (`sync-devkit.py`'s MANIFEST) and is byte-identical
+# in every project. That is only possible because nothing in it is project-specific:
+# `on.pull_request` carries no `branches:` filter (the classify job is already
+# restricted to Dependabot's own PRs, so narrowing by branch would only add a name that
+# differs per repo), and the workflow it waits on is titled `PR Gate` everywhere. Keep
+# it that way — a local edit here is reported as drift by the PR gate rather than
+# quietly becoming one project's private opinion.
 
 on:
   pull_request:
-    branches: [main]
   workflow_run:
     workflows: ["PR Gate"]
     types: [completed]

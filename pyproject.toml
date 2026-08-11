@@ -10,8 +10,8 @@ dependencies = [
   "apscheduler>=3.11,<4",
   "pyarrow>=17.0",
   "duckdb>=1.1",
-  "boto3>=1.35",
-  "pydantic-settings>=2.4",
+  "boto3>=1.43.67",
+  "pydantic-settings>=2.15.0",
 ]
 
 [project.scripts]
@@ -44,7 +44,7 @@ sports-betting = "sports_betting.cli:main"
 # Host-only toolchain. Deliberately NOT installed into the container image — it is
 # several hundred MB of tooling the runtime never imports.
 dev = [
-  "ruff>=0.15",
+  "ruff>=0.16.2",
   "mypy>=1.11",
   "pytest>=8.3",
   "pytest-cov>=5.0",

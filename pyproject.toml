@@ -4,13 +4,13 @@ version = "0.1.0"
 description = "Sports bet automater and data collector"
 requires-python = ">=3.12"
 dependencies = [
-  "sqlalchemy>=2.0",
+  "sqlalchemy>=2.0.52",
   "psycopg[binary]>=3.3.4",
   "httpx>=0.27",
   "apscheduler>=3.11,<4",
-  "pyarrow>=17.0",
+  "pyarrow>=25.0.1",
   "duckdb>=1.1",
-  "boto3>=1.43.67",
+  "boto3>=1.43.71",
   "pydantic-settings>=2.15.0",
 ]
 
@@ -44,14 +44,14 @@ sports-betting = "sports_betting.cli:main"
 # Host-only toolchain. Deliberately NOT installed into the container image — it is
 # several hundred MB of tooling the runtime never imports.
 dev = [
-  "ruff>=0.16.2",
+  "ruff>=0.16.3",
   "mypy>=1.11",
   "pytest>=8.3",
   "pytest-cov>=5.0",
   # Runs `.pre-commit-config.yaml` — the commit-time gate. Installed here (not globally)
   # so the version is pinned with everything else, and so `session-start.sh` can wire the
   # git hook right after `uv sync` without a separate bootstrap step.
-  "pre-commit>=4.6",
+  "pre-commit>=4.6.2",
 ]
 
 [build-system]

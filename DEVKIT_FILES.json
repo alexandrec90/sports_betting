@@ -1,5 +1,5 @@
 {
-  "devkit_tag": "v0.10.0",
+  "devkit_tag": "v0.10.1",
   "files": {
     ".claude/hooks/session-start.sh": "de052fbeca615c448055f76c85e50db0896229c7724021a9916752dd44671dda",
     ".claude/rules/authoring.md": "55def2e448d71f9f85ab414e7dc58c52713bd5194e80ea5fd57a88eb444c1a1b",
@@ -37,7 +37,7 @@
     "scripts/hooks/tests/test_task_branch.py": "4828487fd8c174f654d24913abaa574e394ccd9d204f98a65a4acd7bd9af98b0",
     "scripts/log-wrap.py": "a75c0a1e4ae09c157a35d33a1fdf9829fe2267b11e74aa109d7680b1c9d82b6d",
     "scripts/merge-dependabot-prs.py": "28829f1361e6d8fa7045553a9777590c1d045bfb134102cb228f6e5d5f69cdb3",
-    "scripts/report-workflow-failure.py": "56b55fe6036a3d0a9b3493152eeba5491936e9773c4f0e700db42be9b24dbd6b",
+    "scripts/report-workflow-failure.py": "ff3a73eb4e4a7df12ee7ff0080df4c4286b4b86620ea4a72ff5d47295c84b0ed",
     "scripts/ship.py": "6a9344dbd16be71f88286563eae71f4a21f641111abf7f688141c5a842dc46a8",
     "scripts/sync-codex-context.py": "732ed5619c3146f037aa30c356f61156371fd474d4f9c0b17da4dbc3c0e10df4",
     "scripts/sync-codex-hooks.py": "6c876c9be9b0cace281469c01d1d0ba68012fffe48172911be8373a41986d67c",

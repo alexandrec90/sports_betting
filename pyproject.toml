@@ -10,7 +10,7 @@ dependencies = [
   "apscheduler>=3.11,<4",
   "pyarrow>=25.0.1",
   "duckdb>=1.1",
-  "boto3>=1.43.71",
+  "boto3>=1.43.72",
   "pydantic-settings>=2.15.0",
 ]
 
@@ -45,7 +45,7 @@ sports-betting = "sports_betting.cli:main"
 # several hundred MB of tooling the runtime never imports.
 dev = [
   "ruff>=0.16.3",
-  "mypy>=1.11",
+  "mypy>=2.3.1",
   "pytest>=8.3",
   "pytest-cov>=5.0",
   # Runs `.pre-commit-config.yaml` — the commit-time gate. Installed here (not globally)

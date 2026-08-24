@@ -13,6 +13,7 @@ reported and the agent never burns a cycle on something `ruff --fix` already sol
 Usage:
     python scripts/lint-all.py            # whole repo
     python scripts/lint-all.py --changed  # working-tree diff vs HEAD, plus untracked
+    python scripts/lint-all.py --paths FILE [FILE ...]  # an explicit branch diff
 """
 
 from __future__ import annotations
@@ -73,9 +74,10 @@ def changed_paths() -> list[str]:
     return sorted({n for n in (tracked + untracked) if (REPO_ROOT / n).exists()})
 
 
-def changed_python_files() -> list[str]:
-    """Tracked-but-modified plus untracked .py files, relative to the repo root."""
-    return [n for n in changed_paths() if n.endswith(".py")]
+def changed_python_files(limit_to: list[str] | None = None) -> list[str]:
+    """Existing .py files from the working-tree diff or an explicit path list."""
+    candidates = changed_paths() if limit_to is None else limit_to
+    return [n for n in candidates if n.endswith(".py") and (REPO_ROOT / n).is_file()]
 
 
 def workflow_files(limit_to: list[str] | None = None) -> list[str]:
@@ -154,7 +156,16 @@ def run_tool(name: str, cmd: list[str], fix_hint: str) -> str:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--changed", action="store_true", help="lint only the working-tree diff")
+    scope_group = parser.add_mutually_exclusive_group()
+    scope_group.add_argument(
+        "--changed", action="store_true", help="lint only the working-tree diff"
+    )
+    scope_group.add_argument(
+        "--paths",
+        nargs="+",
+        metavar="FILE",
+        help="lint these explicit paths (used for a committed branch diff)",
+    )
     # Accepted, and a no-op here: this project has no detect-secrets pass to skip.
     # The Stop hook (`scripts/hooks/stop.py`) passes `--no-secrets` unconditionally,
     # because a project whose lint runner *does* have one must skip it on every turn —
@@ -171,23 +182,24 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
-    changed = changed_paths() if args.changed else None
-    targets = changed_python_files() if args.changed else []
-    workflows = workflow_files(changed)
-    envs = env_files(changed)
-    if args.changed and not (targets or workflows or envs):
+    selected = args.paths if args.paths is not None else changed_paths() if args.changed else None
+    targets = changed_python_files(selected) if selected is not None else []
+    workflows = workflow_files(selected)
+    envs = env_files(selected)
+    narrowed = selected is not None
+    if narrowed and not (targets or workflows or envs):
         print("lint-all: no changed files this run lints; nothing to do.")
         _write_artifact("")
         return 0
     scope = targets or ["."]
 
-    print(f"lint-all: {'changed files' if args.changed else 'whole repo'}")
+    print(f"lint-all: {'selected files' if narrowed else 'whole repo'}")
 
     sections = ""
-    # `--changed` with only a workflow or `.env` edit leaves `targets` empty, and
-    # `scope` then falls back to `["."]` — which would silently widen a per-turn
+    # A narrowed run with only a workflow or `.env` edit leaves `targets` empty,
+    # and `scope` then falls back to `["."]` — which would silently widen a scoped
     # check into a whole-repo pass. Gate the Python passes on having Python to lint.
-    if targets or not args.changed:
+    if targets or not narrowed:
         # Auto-fix first, then report. Both ruff passes mutate the same files, so they
         # must stay sequential relative to each other, and both skip the vendored
         # harness — see NO_FIX_SCOPE.

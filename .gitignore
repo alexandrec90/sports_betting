@@ -45,3 +45,9 @@ Thumbs.db
 # Only the per-user bits are ignored.
 .vscode/*.log
 .vscode/.ropeproject/
+
+# Agent worktrees. `claude --worktree` and `remote-control --spawn worktree` cut a
+# nested checkout here; un-ignored it makes this repo read as dirty to everything
+# that looks. `.claude/` itself stays tracked -- settings.json, rules/ and skills/
+# are project contract.
+.claude/worktrees/

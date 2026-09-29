@@ -75,7 +75,6 @@ sports_betting/archive/sync.py::iter_pruned
 sports_betting/archive/sync.py::sha256_file
 sports_betting/config.py::get_settings
 sports_betting/health.py::outcome_as_dict
-sports_betting/historical.py::BulkImportSummary
 sports_betting/historical.py::DownloadResult
 sports_betting/historical.py::inclusive_years
 sports_betting/pipeline.py::EventProvider

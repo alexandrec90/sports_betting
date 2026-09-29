@@ -24,10 +24,9 @@ from sports_betting.archive import BulkArchive, BulkWriteResult
 FOOTBALL_DATA_URL = "https://www.football-data.co.uk/mmz4281/{season}/{league}.csv"
 # One file per country holding every season; closing 1X2 odds only.
 FOOTBALL_DATA_EXTRA_URL = "https://www.football-data.co.uk/new/{country}.csv"
-FOOTBALL_DATA_EXTRA_COUNTRIES = (
-    "ARG", "AUT", "BRA", "CHN", "DNK", "FIN", "IRL", "JPN",
-    "MEX", "NOR", "POL", "ROU", "RUS", "SWE", "SWZ", "USA",
-)  # fmt: skip
+FOOTBALL_DATA_EXTRA_COUNTRIES = tuple(
+    "ARG AUT BRA CHN DNK FIN IRL JPN MEX NOR POL ROU RUS SWE SWZ USA".split()
+)
 # The publisher hides its files under this opaque directory and has moved them before
 # (the plain /{year}/{year}.xlsx path now 404s). If it moves again, alldata.php links
 # the current location. WTA folders carry a "w" suffix: .../2024w/2024.xlsx.

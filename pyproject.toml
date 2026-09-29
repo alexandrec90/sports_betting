@@ -47,6 +47,8 @@ sports-betting = "sports_betting.cli:main"
 dev = [
   "ruff>=0.16.9",
   "mypy>=2.3.1",
+  # openpyxl ships no inline types; without the stubs mypy fails on `import openpyxl`.
+  "types-openpyxl>=3.1",
   "pytest>=9.1",
   "pytest-cov>=5.0",
   # Runs `.pre-commit-config.yaml` — the commit-time gate. Installed here (not globally)

@@ -7,6 +7,11 @@
     "OTEL_EXPORTER_OTLP_ENDPOINT": "http://localhost:4318",
     "OTEL_METRIC_EXPORT_INTERVAL": "10000",
     "OTEL_LOGS_EXPORT_INTERVAL": "5000",
-    "OTEL_RESOURCE_ATTRIBUTES": "service.name=sports_betting,service.instance.id=sports_betting,deployment.environment=local"
+    "OTEL_RESOURCE_ATTRIBUTES": "service.name=sports_betting,service.instance.id=sports_betting,deployment.environment=local",
+    "PYTHON_COLORS": "0",
+    "PY_COLORS": "0",
+    "TTY_COMPATIBLE": "0",
+    "TTY_INTERACTIVE": "0",
+    "MSYS2_ARG_CONV_EXCL": "origin/;upstream/;refs/"
   }
 }

@@ -6,12 +6,13 @@
 # Never add or raise a line to make new code pass; fix the code. `dependency::` is one
 # exception -- adding a package is a line here, so the PR diff shows it.
 #
-# `--record --reason "..."` is the other, and it is the deliberate hole. A module far
-# past `file_lines` cannot gain a line, so a bug whose fix belongs in one has nowhere
-# to go, and the split the finding asks for is a separate body of work. Recording says
+# `--record --reason "..."` is the other, and it is the deliberate hole. A function far
+# past its limit cannot gain a line, so a bug whose fix belongs in one has nowhere to
+# go, and the refactor the finding asks for is a separate body of work. Recording says
 # so out loud: the reason is mandatory, counter rules (`suppressions`, `todos`,
 # `skipped_tests`, ...) are refused because those are always somebody giving up rather
-# than a module's size, and every move is logged below with what it moved and why.
+# than a unit's size, and every move is logged below with what it moved and why.
+# Module size -- `file_lines`, `imports`, `definitions` -- is advisory and never here.
 #
 # Regenerate only when adopting the gate: python scripts/hooks/structure_check.py --seed
 complexity::scripts/lint-all.py::main = 18
@@ -30,7 +31,6 @@ dependency::pyproject.toml::pytest = 1
 dependency::pyproject.toml::pytest-cov = 1
 dependency::pyproject.toml::ruff = 1
 dependency::pyproject.toml::sqlalchemy = 1
-file_lines::sports_betting/historical.py = 532
 function_lines::scripts/lint-all.py::main = 91
 function_lines::sports_betting/cli.py::main = 134
 function_params::sports_betting/archive/bulk.py::write = 11

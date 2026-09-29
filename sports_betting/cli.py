@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from collections.abc import Callable
 from dataclasses import asdict
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
@@ -12,9 +13,14 @@ from pathlib import Path
 from sports_betting.archive import ArchiveSync, EventArchive, restore_sources, store_for
 from sports_betting.archive.recatalog import rebuild_catalogs
 from sports_betting.archive.sync import DEFAULT_MAX_OBJECT_BYTES
-from sports_betting.config import get_settings
+from sports_betting.config import Settings, get_settings
 from sports_betting.health import HealthStore
-from sports_betting.historical import HistoricalImporters
+from sports_betting.historical import (
+    FOOTBALL_DATA_EXTRA_COUNTRIES,
+    TENNIS_DATA_FIRST_XLSX_YEAR,
+    BulkImportSummary,
+    HistoricalImporters,
+)
 from sports_betting.pipeline import ingest_events
 from sports_betting.providers import TheSportsDbClient
 from sports_betting.scheduler import CollectionJobs, serve
@@ -55,6 +61,13 @@ def build_parser() -> argparse.ArgumentParser:
     football = bulk_sources.add_parser("football-data", help="soccer results and bookmaker odds")
     _add_year_range(football, default_start=2000)
     football.add_argument("--leagues", default="E0,D1,I1,SP1,F1")
+    extra = bulk_sources.add_parser(
+        "football-data-extra", help="soccer results and closing odds, 16 extra countries"
+    )
+    extra.add_argument("--countries", default=",".join(FOOTBALL_DATA_EXTRA_COUNTRIES))
+    tennis = bulk_sources.add_parser("tennis-data", help="ATP/WTA results and bookmaker odds")
+    _add_year_range(tennis, default_start=TENNIS_DATA_FIRST_XLSX_YEAR)
+    tennis.add_argument("--tours", default="atp,wta")
     nfl = bulk_sources.add_parser("nflverse", help="NFL play-by-play Parquet")
     _add_year_range(nfl, default_start=1999)
     money = bulk_sources.add_parser("moneypuck", help="NHL shot-level ZIP files")
@@ -178,6 +191,33 @@ def health_lines(report: dict, *, quiet: bool = False, now: datetime | None = No
     return lines
 
 
+def _run_bulk_import(importers: HistoricalImporters, args: argparse.Namespace) -> BulkImportSummary:
+    """Run the importer the `bulk-import` subcommand named, with its parsed options."""
+    csv = Settings.csv
+    bulk_function: dict[str, Callable[[], BulkImportSummary]] = {
+        "football-data": lambda: importers.football_data(
+            start_year=args.from_season, end_year=args.to_season, leagues=csv(args.leagues)
+        ),
+        "football-data-extra": lambda: importers.football_data_extra(countries=csv(args.countries)),
+        "tennis-data": lambda: importers.tennis_data(
+            start_year=args.from_season, end_year=args.to_season, tours=csv(args.tours)
+        ),
+        "nflverse": lambda: importers.nflverse_pbp(
+            start_year=args.from_season, end_year=args.to_season
+        ),
+        "moneypuck": lambda: importers.moneypuck_shots(
+            start_year=args.from_season, end_year=args.to_season
+        ),
+        "moneypuck-games": importers.moneypuck_games,
+        "statsbomb": lambda: importers.statsbomb(
+            competition_id=args.competition_id,
+            season_id=args.season_id,
+            max_matches=args.max_matches,
+        ),
+    }
+    return bulk_function[args.bulk_source]()
+
+
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     report_path = ARCHIVE_REPORT_PATH if args.command.startswith("archive-") else REPORT_PATH
@@ -264,26 +304,7 @@ def main(argv: list[str] | None = None) -> int:
                     competitions = importers.statsbomb_competitions()
                     payload = {"ok": True, "competitions": competitions}
                 else:
-                    bulk_function = {
-                        "football-data": lambda: importers.football_data(
-                            start_year=args.from_season,
-                            end_year=args.to_season,
-                            leagues=settings.csv(args.leagues),
-                        ),
-                        "nflverse": lambda: importers.nflverse_pbp(
-                            start_year=args.from_season, end_year=args.to_season
-                        ),
-                        "moneypuck": lambda: importers.moneypuck_shots(
-                            start_year=args.from_season, end_year=args.to_season
-                        ),
-                        "moneypuck-games": importers.moneypuck_games,
-                        "statsbomb": lambda: importers.statsbomb(
-                            competition_id=args.competition_id,
-                            season_id=args.season_id,
-                            max_matches=args.max_matches,
-                        ),
-                    }
-                    summary = bulk_function[args.bulk_source]()
+                    summary = _run_bulk_import(importers, args)
                     payload = {"ok": True, **asdict(summary)}
             _write_report(payload)
             sys.stdout.write(json.dumps(payload, default=str, sort_keys=True) + "\n")

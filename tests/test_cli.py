@@ -1,6 +1,7 @@
 import json
 from argparse import Namespace
 from datetime import date
+from types import SimpleNamespace
 
 import pytest
 
@@ -246,3 +247,92 @@ def test_bulk_parser_accepts_source_specific_ranges():
     assert parsed.from_season == 2020
     assert parsed.to_season == 2021
     assert parsed.leagues == "E0,SP1"
+
+
+def test_bulk_parser_defaults_for_extra_leagues_and_tennis():
+    extra = cli.build_parser().parse_args(["bulk-import", "football-data-extra"])
+    tennis = cli.build_parser().parse_args(["bulk-import", "tennis-data", "--tours", "wta"])
+
+    assert extra.countries.split(",")[:2] == ["ARG", "AUT"]
+    assert len(extra.countries.split(",")) == 16
+    assert tennis.from_season == 2013
+    assert tennis.tours == "wta"
+
+
+@pytest.mark.parametrize(
+    ("argv", "expected"),
+    [
+        (
+            ["bulk-import", "football-data-extra", "--countries", "ARG,BRA"],
+            ("football_data_extra", {"countries": ("ARG", "BRA")}),
+        ),
+        (
+            ["bulk-import", "tennis-data", "--from-season", "2020", "--to-season", "2021"],
+            ("tennis_data", {"start_year": 2020, "end_year": 2021, "tours": ("atp", "wta")}),
+        ),
+    ],
+)
+def test_bulk_import_dispatches_new_sources(monkeypatch, tmp_path, argv, expected):
+    from sports_betting.config import Settings
+    from sports_betting.historical import BulkImportSummary
+
+    calls = []
+
+    class FakeImporters:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def __getattr__(self, name):
+            def record(**kwargs):
+                calls.append((name, kwargs))
+                return BulkImportSummary(name, 0, 0, 0, ())
+
+            return record
+
+    monkeypatch.setattr(cli, "REPORT_PATH", tmp_path / "report.json")
+    monkeypatch.setattr(
+        cli, "get_settings", lambda: Settings(_env_file=None, archive_root=tmp_path)
+    )
+    monkeypatch.setattr(cli, "HistoricalImporters", FakeImporters)
+
+    assert cli.main(argv) == 0
+    assert calls == [expected]
+
+
+def test_run_bulk_import_passes_parsed_options_to_the_named_importer():
+    from sports_betting.historical import BulkImportSummary
+
+    calls = []
+
+    class FakeImporters:
+        def __getattr__(self, name):
+            def record(**kwargs):
+                calls.append((name, kwargs))
+                return BulkImportSummary(name, 0, 0, 0, ())
+
+            return record
+
+    parser = cli.build_parser()
+    football = parser.parse_args(["bulk-import", "football-data", "--leagues", "E0, D1"])
+    games = parser.parse_args(["bulk-import", "moneypuck-games"])
+
+    assert cli._run_bulk_import(FakeImporters(), football).source == "football_data"
+    assert cli._run_bulk_import(FakeImporters(), games).source == "moneypuck_games"
+    assert calls == [
+        (
+            "football_data",
+            {"start_year": 2000, "end_year": football.to_season, "leagues": ("E0", "D1")},
+        ),
+        ("moneypuck_games", {}),
+    ]
+
+
+def test_run_bulk_import_rejects_an_unknown_source():
+    with pytest.raises(KeyError):
+        cli._run_bulk_import(SimpleNamespace(moneypuck_games=None), Namespace(bulk_source="nope"))

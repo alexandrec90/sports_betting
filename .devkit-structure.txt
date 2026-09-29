@@ -23,6 +23,7 @@ dependency::pyproject.toml::boto3 = 1
 dependency::pyproject.toml::duckdb = 1
 dependency::pyproject.toml::httpx = 1
 dependency::pyproject.toml::mypy = 1
+dependency::pyproject.toml::openpyxl = 1
 dependency::pyproject.toml::pre-commit = 1
 dependency::pyproject.toml::psycopg = 1
 dependency::pyproject.toml::pyarrow = 1
@@ -31,8 +32,9 @@ dependency::pyproject.toml::pytest = 1
 dependency::pyproject.toml::pytest-cov = 1
 dependency::pyproject.toml::ruff = 1
 dependency::pyproject.toml::sqlalchemy = 1
+dependency::pyproject.toml::types-openpyxl = 1
 function_lines::scripts/lint-all.py::main = 91
-function_lines::sports_betting/cli.py::main = 134
+function_lines::sports_betting/cli.py::main = 115
 function_params::sports_betting/archive/bulk.py::write = 11
 function_params::sports_betting/archive/manifest.py::build_manifest = 7
 function_params::sports_betting/providers/thesportsdb.py::from_values = 18
@@ -46,3 +48,9 @@ swallowed_errors::scripts/notify.py = 1
 swallowed_errors::sports_betting/archive/sync.py = 2
 swallowed_errors::sports_betting/cli.py = 1
 swallowed_errors::sports_betting/scheduler.py = 4
+
+# --- recorded growth ------------------------------------------------
+
+# 2026-09-29  recorded: openpyxl reads Tennis-Data's .xlsx season files (no stdlib reader); types-openpyxl is its PEP 561 stubs so mypy can check the import
+#   dependency::pyproject.toml::openpyxl -> 1
+#   dependency::pyproject.toml::types-openpyxl -> 1

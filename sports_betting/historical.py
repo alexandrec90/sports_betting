@@ -17,10 +17,23 @@ import httpx
 import pyarrow as pa
 import pyarrow.csv as pacsv
 import pyarrow.parquet as pq
+from openpyxl import load_workbook
 
 from sports_betting.archive import BulkArchive, BulkWriteResult
 
 FOOTBALL_DATA_URL = "https://www.football-data.co.uk/mmz4281/{season}/{league}.csv"
+# One file per country holding every season; closing 1X2 odds only.
+FOOTBALL_DATA_EXTRA_URL = "https://www.football-data.co.uk/new/{country}.csv"
+FOOTBALL_DATA_EXTRA_COUNTRIES = tuple(
+    "ARG AUT BRA CHN DNK FIN IRL JPN MEX NOR POL ROU RUS SWE SWZ USA".split()
+)
+# The publisher hides its files under this opaque directory and has moved them before
+# (the plain /{year}/{year}.xlsx path now 404s). If it moves again, alldata.php links
+# the current location. WTA folders carry a "w" suffix: .../2024w/2024.xlsx.
+TENNIS_DATA_URL = "http://www.tennis-data.co.uk/hrjk-85HytOjkhth76j_ygh4jf7/{folder}/{year}.xlsx"
+# Earlier seasons are published as legacy .xls, which openpyxl cannot read.
+TENNIS_DATA_FIRST_XLSX_YEAR = 2013
+TENNIS_DATA_TOURS = ("atp", "wta")
 NFLVERSE_PBP_URL = (
     "https://github.com/nflverse/nflverse-data/releases/download/pbp/play_by_play_{season}.parquet"
 )
@@ -35,6 +48,7 @@ STATSBOMB_LICENSE = (
     "https://github.com/statsbomb/open-data",
 )
 MONEYPUCK_LICENSE = ("Non-commercial use with attribution", "https://moneypuck.com/data.htm")
+TENNIS_DATA_LICENSE = ("Tennis-Data.co.uk terms", "http://www.tennis-data.co.uk/data.php")
 
 
 @dataclass(frozen=True)
@@ -240,6 +254,54 @@ class HistoricalImporters:
                     )[0]
                 )
         return _summary("football-data", results)
+
+    def football_data_extra(self, *, countries: Iterable[str]) -> BulkImportSummary:
+        clean = tuple(dict.fromkeys(country.strip().upper() for country in countries if country))
+        if not clean:
+            raise ValueError("at least one Football-Data extra-league country code is required")
+        unknown = sorted(set(clean) - set(FOOTBALL_DATA_EXTRA_COUNTRIES))
+        if unknown:
+            raise ValueError(f"unknown Football-Data extra-league country code(s): {unknown}")
+        results = [
+            self._import(
+                FOOTBALL_DATA_EXTRA_URL.format(country=country),
+                dataset="football_data_uk_extra_matches",
+                partition_parts=(f"country={country}",),
+                license_terms=FOOTBALL_DATA_LICENSE,
+                converter=_csv_converter,
+            )[0]
+            for country in clean
+        ]
+        return _summary("football-data-extra", results)
+
+    def tennis_data(
+        self, *, start_year: int, end_year: int, tours: Iterable[str]
+    ) -> BulkImportSummary:
+        clean = tuple(dict.fromkeys(tour.strip().lower() for tour in tours if tour))
+        if not clean:
+            raise ValueError("at least one tennis tour (atp, wta) is required")
+        unknown = sorted(set(clean) - set(TENNIS_DATA_TOURS))
+        if unknown:
+            raise ValueError(f"unknown tennis tour(s): {unknown}")
+        if start_year < TENNIS_DATA_FIRST_XLSX_YEAR:
+            raise ValueError(
+                f"Tennis-Data seasons before {TENNIS_DATA_FIRST_XLSX_YEAR} are legacy .xls "
+                "files, which this importer does not read"
+            )
+        results = []
+        for year in inclusive_years(start_year, end_year):
+            for tour in clean:
+                folder = f"{year}w" if tour == "wta" else str(year)
+                results.append(
+                    self._import(
+                        TENNIS_DATA_URL.format(folder=folder, year=year),
+                        dataset="tennis_data_matches",
+                        partition_parts=(f"tour={tour}", f"season={year}"),
+                        license_terms=TENNIS_DATA_LICENSE,
+                        converter=_xlsx_converter,
+                    )[0]
+                )
+        return _summary("tennis-data", results)
 
     def nflverse_pbp(self, *, start_year: int, end_year: int) -> BulkImportSummary:
         results = []
@@ -504,6 +566,65 @@ def _zip_csv_converter(path: Path, target: Path, sha256: str, fetched_at: dateti
         return _csv_converter(extracted, target, sha256, fetched_at)
     finally:
         extracted.unlink(missing_ok=True)
+
+
+def _xlsx_cell(value) -> str | None:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        # Tennis-Data dates carry no time of day; keep the plain calendar date.
+        return (
+            value.date().isoformat() if value.time() == datetime.min.time() else value.isoformat()
+        )
+    if isinstance(value, float) and value.is_integer():
+        return str(int(value))
+    return str(value)
+
+
+def _xlsx_tables(path: Path) -> Iterable[pa.Table]:
+    """First worksheet as string columns, like `_csv_tables`, in 10k-row batches."""
+    # A handle, not the path: openpyxl rejects any extension but .xlsx, and downloads
+    # are staged as .part files.
+    handle = path.open("rb")
+    workbook = load_workbook(handle, read_only=True, data_only=True)
+    try:
+        rows = workbook.worksheets[0].iter_rows(values_only=True)
+        header = next(rows, None)
+        if not header:
+            return
+        # Trailing formatted-but-empty columns come back as None headers; drop them.
+        width = max((i + 1 for i, name in enumerate(header) if name is not None), default=0)
+        names = [
+            str(name) if name is not None else f"column_{i}"
+            for i, name in enumerate(header[:width])
+        ]
+        if len(set(names)) != len(names):
+            raise ValueError(f"duplicate column names in worksheet header: {names}")
+        batch: list[list[str | None]] = []
+        for row in rows:
+            values = [_xlsx_cell(value) for value in row[:width]]
+            values += [None] * (width - len(values))
+            if all(value is None for value in values):
+                continue
+            batch.append(values)
+            if len(batch) == 10_000:
+                yield _string_table(names, batch)
+                batch = []
+        if batch:
+            yield _string_table(names, batch)
+    finally:
+        workbook.close()
+        handle.close()
+
+
+def _string_table(names: list[str], rows: list[list[str | None]]) -> pa.Table:
+    return pa.table(
+        {name: pa.array([row[i] for row in rows], type=pa.string()) for i, name in enumerate(names)}
+    )
+
+
+def _xlsx_converter(path: Path, target: Path, sha256: str, fetched_at: datetime) -> int:
+    return _write_tables(_xlsx_tables(path), target, sha256, fetched_at)
 
 
 def _parquet_converter(path: Path, target: Path, sha256: str, fetched_at: datetime) -> int:

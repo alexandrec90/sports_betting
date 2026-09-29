@@ -84,6 +84,12 @@ disk use and schema, then expand it:
 # Soccer match results, statistics, and historical bookmaker odds
 uv run sports-betting bulk-import football-data --from-season 2020 --to-season 2025 --leagues E0,SP1
 
+# 16 extra countries (ARG, BRA, USA, ...), one all-seasons file each, closing 1X2 odds
+uv run sports-betting bulk-import football-data-extra --countries ARG,BRA,USA
+
+# ATP/WTA results with Bet365/Pinnacle odds (2013+; earlier years are legacy .xls)
+uv run sports-betting bulk-import tennis-data --from-season 2020 --to-season 2026
+
 # NFL play-by-play (available from 1999)
 uv run sports-betting bulk-import nflverse --from-season 2020 --to-season 2025
 

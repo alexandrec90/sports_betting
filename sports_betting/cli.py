@@ -14,7 +14,11 @@ from sports_betting.archive.recatalog import rebuild_catalogs
 from sports_betting.archive.sync import DEFAULT_MAX_OBJECT_BYTES
 from sports_betting.config import get_settings
 from sports_betting.health import HealthStore
-from sports_betting.historical import HistoricalImporters
+from sports_betting.historical import (
+    FOOTBALL_DATA_EXTRA_COUNTRIES,
+    TENNIS_DATA_FIRST_XLSX_YEAR,
+    HistoricalImporters,
+)
 from sports_betting.pipeline import ingest_events
 from sports_betting.providers import TheSportsDbClient
 from sports_betting.scheduler import CollectionJobs, serve
@@ -55,6 +59,13 @@ def build_parser() -> argparse.ArgumentParser:
     football = bulk_sources.add_parser("football-data", help="soccer results and bookmaker odds")
     _add_year_range(football, default_start=2000)
     football.add_argument("--leagues", default="E0,D1,I1,SP1,F1")
+    extra = bulk_sources.add_parser(
+        "football-data-extra", help="soccer results and closing odds, 16 extra countries"
+    )
+    extra.add_argument("--countries", default=",".join(FOOTBALL_DATA_EXTRA_COUNTRIES))
+    tennis = bulk_sources.add_parser("tennis-data", help="ATP/WTA results and bookmaker odds")
+    _add_year_range(tennis, default_start=TENNIS_DATA_FIRST_XLSX_YEAR)
+    tennis.add_argument("--tours", default="atp,wta")
     nfl = bulk_sources.add_parser("nflverse", help="NFL play-by-play Parquet")
     _add_year_range(nfl, default_start=1999)
     money = bulk_sources.add_parser("moneypuck", help="NHL shot-level ZIP files")
@@ -269,6 +280,14 @@ def main(argv: list[str] | None = None) -> int:
                             start_year=args.from_season,
                             end_year=args.to_season,
                             leagues=settings.csv(args.leagues),
+                        ),
+                        "football-data-extra": lambda: importers.football_data_extra(
+                            countries=settings.csv(args.countries)
+                        ),
+                        "tennis-data": lambda: importers.tennis_data(
+                            start_year=args.from_season,
+                            end_year=args.to_season,
+                            tours=settings.csv(args.tours),
                         ),
                         "nflverse": lambda: importers.nflverse_pbp(
                             start_year=args.from_season, end_year=args.to_season

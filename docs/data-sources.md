@@ -85,6 +85,21 @@ keys and write separate datasets: `football_data_uk_matches`, `statsbomb_matches
 retained alongside query-ready Parquet. See the README for commands. MoneyPuck remains limited
 to non-commercial use unless written permission is obtained.
 
+Two more odds-bearing importers were added on 2026-09-29: `football-data-extra`
+(`football_data_uk_extra_matches`, 16 countries) and `tennis-data` (`tennis_data_matches`,
+ATP/WTA 2013+). Re-checked the same day:
+
+- Football-Data.co.uk and Tennis-Data.co.uk (same operator) now restrict use to **private
+  individuals**, excluding commercial or data-training products built with automated
+  bots/scrapers/AI, and their `robots.txt` blocks AI crawlers. Run these importers yourself
+  for private research; an agent should not fetch them.
+- Football-Data flags its Pinnacle odds after 2025-07-23 as unreliable, and no longer uses
+  them in its average and maximum odds. Do not treat post-2025-07-23 `PS*` columns as a
+  sharp-market benchmark.
+- Tennis-Data serves files from an opaque directory that has moved before. If the importer
+  gets 404s, take the current path from <http://www.tennis-data.co.uk/alldata.php> and update
+  `TENNIS_DATA_URL`.
+
 ## Scheduler ownership and quotas
 
 `sports_betting` owns provider selection, cadence, retries, and quota policy. The sibling

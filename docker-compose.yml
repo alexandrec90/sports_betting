@@ -16,6 +16,9 @@ services:
       target: prod
     restart: unless-stopped
     command: ["sports-betting", "serve"]
+    # `.dockerignore` keeps `.env` out of the image, so this block IS the collector's
+    # configuration: a setting not listed here is a `.env` line the container ignores.
+    # Defaults must equal `Settings`' — tests/test_compose_env.py enforces both.
     environment:
       ARCHIVE_ROOT: /data-lake/archive
       SPORTSDB_API_KEY: ${SPORTSDB_API_KEY:-123}
@@ -23,12 +26,19 @@ services:
       SPORTSDB_SPORTS: ${SPORTSDB_SPORTS:-Soccer,Baseball,Basketball,Ice Hockey,American Football}
       FOOTBALL_DATA_API_KEY: ${FOOTBALL_DATA_API_KEY:-}
       BALLDONTLIE_API_KEY: ${BALLDONTLIE_API_KEY:-}
-      BALLDONTLIE_SPORTS: ${BALLDONTLIE_SPORTS:-nba,nfl,mlb,epl}
+      BALLDONTLIE_SPORTS: ${BALLDONTLIE_SPORTS:-nba,nfl,mlb}
       THE_ODDS_API_KEY: ${THE_ODDS_API_KEY:-}
       THE_ODDS_API_SPORTS: ${THE_ODDS_API_SPORTS:-basketball_nba,baseball_mlb}
+      THE_ODDS_API_REGIONS: ${THE_ODDS_API_REGIONS:-us}
       COLLECTION_INTERVAL_HOURS: ${COLLECTION_INTERVAL_HOURS:-6}
       SCHEDULER_HEALTH_FILE: /app/logs/scheduler-health.json
       PROVIDER_QUOTA_FILE: /app/logs/provider-quotas.json
+      BULK_REQUEST_INTERVAL_SECONDS: ${BULK_REQUEST_INTERVAL_SECONDS:-1}
+      BULK_MAX_DOWNLOAD_BYTES: ${BULK_MAX_DOWNLOAD_BYTES:-2000000000}
+      BULK_REFRESH_ENABLED: ${BULK_REFRESH_ENABLED:-false}
+      BULK_REFRESH_SOURCES: ${BULK_REFRESH_SOURCES:-football-data,nflverse,moneypuck}
+      BULK_FOOTBALL_LEAGUES: ${BULK_FOOTBALL_LEAGUES:-E0,D1,I1,SP1,F1}
+      STATSBOMB_REFRESH_TARGETS: ${STATSBOMB_REFRESH_TARGETS:-}
     volumes:
       - ../data-lake/data:/data-lake
       - ./logs:/app/logs

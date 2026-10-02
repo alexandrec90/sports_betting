@@ -28,8 +28,12 @@ services:
       BALLDONTLIE_API_KEY: ${BALLDONTLIE_API_KEY:-}
       BALLDONTLIE_SPORTS: ${BALLDONTLIE_SPORTS:-nba,nfl,mlb}
       THE_ODDS_API_KEY: ${THE_ODDS_API_KEY:-}
-      THE_ODDS_API_SPORTS: ${THE_ODDS_API_SPORTS:-basketball_nba,baseball_mlb}
+      THE_ODDS_API_SPORTS: ${THE_ODDS_API_SPORTS:-icehockey_nhl,americanfootball_nfl,basketball_nba,baseball_mlb,americanfootball_cfl,americanfootball_ncaaf,soccer_epl,soccer_uefa_champs_league,soccer_spain_la_liga,soccer_italy_serie_a,soccer_germany_bundesliga,soccer_france_ligue_one,soccer_usa_mls,tennis_atp_*,tennis_wta_*}
       THE_ODDS_API_REGIONS: ${THE_ODDS_API_REGIONS:-us}
+      THE_ODDS_API_MONTHLY_BUDGET: ${THE_ODDS_API_MONTHLY_BUDGET:-450}
+      THE_ODDS_API_LOOKAHEAD_HOURS: ${THE_ODDS_API_LOOKAHEAD_HOURS:-36}
+      ODDS_REFRESH_FILE: /app/logs/odds-api-refresh.json
+      API_SPORTS_KEY: ${API_SPORTS_KEY:-}
       COLLECTION_INTERVAL_HOURS: ${COLLECTION_INTERVAL_HOURS:-6}
       SCHEDULER_HEALTH_FILE: /app/logs/scheduler-health.json
       PROVIDER_QUOTA_FILE: /app/logs/provider-quotas.json

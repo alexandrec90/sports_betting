@@ -18,9 +18,23 @@ from sports_betting.providers import (
     OddsApiClient,
     TheSportsDbClient,
 )
-from sports_betting.throttle import ProviderThrottle, QuotaLedger
+from sports_betting.odds_plan import (
+    RefreshLog,
+    expand_focus,
+    has_event_within,
+    order_by_staleness,
+    run_allowance,
+    runs_left_in_month,
+)
+from sports_betting.throttle import (
+    DailyQuotaExceededError,
+    ProviderThrottle,
+    QuotaBudget,
+    QuotaLedger,
+)
 
-ODDS_DAILY_SAFETY_LIMIT = 20  # provider free limit is 25; reserve five for manual diagnostics
+#: Stop when the provider reports this few credits left, whatever our own ledger says.
+ODDS_PROVIDER_RESERVE = 25
 
 
 @dataclass(frozen=True)
@@ -53,16 +67,23 @@ class CollectionJobs:
         self.health = HealthStore(settings.scheduler_health_file)
         # Carry a previous process's history across the restart; see HealthStore.seed.
         self.health.seed()
-        ledger = QuotaLedger(settings.provider_quota_file)
+        ledger = self.ledger = QuotaLedger(settings.provider_quota_file)
+        self.odds_refresh = RefreshLog(settings.odds_refresh_file)
         self.football_gate = ProviderThrottle("football-data.org", min_interval_seconds=7)
         self.thesportsdb_gate = ProviderThrottle("thesportsdb", min_interval_seconds=2)
         self.balldontlie_gate = ProviderThrottle("balldontlie", min_interval_seconds=13)
         self.odds_gate = ProviderThrottle(
             "the-odds-api",
             min_interval_seconds=2,
-            ledger=ledger,
-            daily_limit=ODDS_DAILY_SAFETY_LIMIT,
+            budget=QuotaBudget(
+                ledger,
+                monthly_limit=settings.the_odds_api_monthly_budget,
+                # One h2h market per call, so a call costs one credit per region.
+                cost_per_request=max(1, len(settings.csv(settings.the_odds_api_regions))),
+            ),
         )
+        # `/sports` and `/events` cost no credits; they are only paced.
+        self.odds_free_gate = ProviderThrottle("the-odds-api-free", min_interval_seconds=2)
         self.bulk_gate = ProviderThrottle(
             "historical-bulk",
             min_interval_seconds=settings.bulk_request_interval_seconds,
@@ -140,29 +161,75 @@ class CollectionJobs:
 
         return self._run("balldontlie", collect)
 
-    def the_odds_api(self) -> JobOutcome:
+    def odds_credits_left(self, provider_remaining: int | None) -> int:
+        """Credits this run may still plan with: our monthly budget, capped by the provider.
+
+        The provider's own `x-requests-remaining` wins when it is lower, which covers manual
+        calls and a billing cycle that does not start on the 1st.
+        """
+        _, used = self.ledger.used("the-odds-api")
+        left = self.settings.the_odds_api_monthly_budget - used
+        if provider_remaining is not None:
+            left = min(left, provider_remaining - ODDS_PROVIDER_RESERVE)
+        return max(0, left)
+
+    def the_odds_api(self, now: datetime | None = None) -> JobOutcome:
         if not self.settings.the_odds_api_key:
             return self._finish("the-odds-api", JobOutcome("skipped", detail="API key not set"))
 
         def collect() -> JobOutcome:
-            fetched = added = 0
+            moment = now or datetime.now(UTC)
+            window = timedelta(hours=self.settings.the_odds_api_lookahead_hours)
+            fetched = added = calls = 0
             failures: list[str] = []
             with OddsApiClient(
                 self.settings.the_odds_api_key,
                 regions=self.settings.the_odds_api_regions,
                 timeout_seconds=self.settings.sportsdb_timeout_seconds,
                 before_request=self.odds_gate,
+                before_free_request=self.odds_free_gate,
             ) as client:
-                for sport in self.settings.csv(self.settings.the_odds_api_sports):
+                active = [
+                    str(sport["key"])
+                    for sport in client.sports()
+                    if sport.get("active") and not sport.get("has_outrights") and sport.get("key")
+                ]
+                focus = expand_focus(self.settings.csv(self.settings.the_odds_api_sports), active)
+                refreshed = self.odds_refresh.load()
+                allowance = run_allowance(
+                    self.odds_credits_left(client.remaining),
+                    runs_left_in_month(moment, self.settings.collection_interval_hours),
+                    client.cost_per_call,
+                )
+                for sport in order_by_staleness(focus, refreshed):
+                    if calls >= allowance:
+                        break
                     try:
+                        if not has_event_within(client.event_starts(sport), moment, window):
+                            continue
+                        if self.odds_credits_left(client.remaining) < client.cost_per_call:
+                            break
                         snapshots = client.fetch(sport)
+                    except DailyQuotaExceededError as exc:
+                        failures.append(f"{sport}: {exc}")
+                        break
                     except Exception as exc:
                         failures.append(f"{sport}: {type(exc).__name__}: {exc}")
                         continue
+                    calls += 1
+                    refreshed[sport] = moment
+                    self.odds_refresh.save(refreshed)
                     result = self.odds.write(snapshots)
                     fetched += len(snapshots)
                     added += result.snapshots_added
-            return _partial_outcome(fetched, added, failures)
+                remaining = client.remaining
+            outcome = _partial_outcome(fetched, added, failures)
+            plan = (
+                f"{calls}/{allowance} paid call(s) over {len(focus)} active focus league(s); "
+                f"provider credits left {remaining}"
+            )
+            detail = f"{plan}; {outcome.detail}" if outcome.detail else plan
+            return JobOutcome(outcome.status, fetched, added, detail)
 
         return self._run("the-odds-api", collect)
 

@@ -20,9 +20,16 @@ import pytest
 
 from sports_betting import cli
 from sports_betting.archive.odds import OddsArchive
+from sports_betting.overlay.coverage import CoverageTracker, coverage_lines, summarize
+from sports_betting.overlay.coverage import load as load_coverage
 from sports_betting.overlay.evaluate import EventVerdict, SideVerdict, evaluate, same_team
-from sports_betting.overlay.lines import FairLine, fair_line_from_payload, load_fair_lines
-from sports_betting.overlay.offers import Offer, parse_offers
+from sports_betting.overlay.lines import (
+    FairLine,
+    consensus_probabilities,
+    fair_line_from_payload,
+    load_fair_lines,
+)
+from sports_betting.overlay.offers import CatalogEntry, Offer, parse_catalog, parse_offers
 from sports_betting.overlay.server import DEFAULT_PORT, MAX_BODY_BYTES, CachedLines, OverlayServer
 from sports_betting.overlay.server import OverlayHandler
 from sports_betting.providers.odds_api import OddsSnapshot
@@ -163,6 +170,44 @@ def test_parse_offers_skips_started_unpriced_and_moneyline_less_events_and_dedup
 @pytest.mark.parametrize("payload", [None, [], "text", {"data": None}, {"markets": "x"}])
 def test_parse_offers_tolerates_unrelated_payloads(payload):
     assert parse_offers(payload) == []
+    assert parse_catalog(payload) == []
+
+
+def three_way(home: float = 2.0, draw: float = 3.4, away: float = 3.9, **kwargs: Any) -> dict:
+    market = {
+        "subType": "MR",
+        "groupCode": "MATCH_RESULT",
+        "handicapValue": None,
+        "outcomes": [
+            outcome("Draw", "D", price(draw)),
+            outcome("Leeds United", "A", price(away)),
+            outcome("Arsenal FC", "H", price(home)),
+        ],
+    }
+    return event(home="Arsenal FC", away="Leeds United", markets=[market], **kwargs)
+
+
+def test_parse_offers_reads_a_three_way_soccer_market():
+    [offer] = parse_offers(time_band(three_way()))
+    assert (offer.home, offer.away) == ("Arsenal FC", "Leeds United")
+    assert (offer.home_price, offer.draw_price, offer.away_price) == (2.0, 3.4, 3.9)
+
+
+def test_parse_offers_rejects_a_three_way_market_missing_its_draw():
+    broken = three_way()
+    broken["markets"][0]["outcomes"].pop(0)
+    assert parse_offers(time_band(broken)) == []
+
+
+def test_parse_catalog_lists_every_upcoming_event_priced_or_not():
+    listed = event("7", markets=[])
+    listed["class"] = {"name": "United States"}
+    payload = time_band(event("1"), listed, event("1"), event("9", started=True))
+
+    assert parse_catalog(payload) == [
+        CatalogEntry("1", "BASEBALL", "MLB"),
+        CatalogEntry("7", "BASEBALL", "United States / MLB"),
+    ]
 
 
 # --- fair lines ---------------------------------------------------------------------
@@ -179,30 +224,56 @@ def test_fair_line_removes_each_books_margin_then_averages():
     assert fair.books == 2
 
 
-def test_fair_line_ignores_books_with_a_draw_or_bad_price_and_needs_one_usable():
+def draw_book(home: float, away: float, draw: float) -> dict:
+    return {
+        "key": "with-draw",
+        "markets": [
+            {
+                "key": "h2h",
+                "outcomes": [
+                    {"name": "Los Angeles Dodgers", "price": home},
+                    {"name": "Atlanta Braves", "price": away},
+                    {"name": "Draw", "price": draw},
+                ],
+            }
+        ],
+    }
+
+
+def test_fair_line_ignores_bad_prices_and_needs_one_usable_book():
     payload = odds_payload((1.9, 1.9), (0.5, 3.0))
-    payload["bookmakers"].append(
-        {
-            "key": "with-draw",
-            "markets": [
-                {
-                    "key": "h2h",
-                    "outcomes": [
-                        {"name": "Los Angeles Dodgers", "price": 2.0},
-                        {"name": "Atlanta Braves", "price": 3.0},
-                        {"name": "Draw", "price": 4.0},
-                    ],
-                }
-            ],
-        }
-    )
     fair = fair_line_from_payload(payload, sport="Baseball", league="MLB", observed_at=START)
-    assert fair is not None and fair.books == 1
+    assert fair is not None and fair.books == 1 and fair.draw_prob is None
 
     payload["bookmakers"] = payload["bookmakers"][1:]
     assert (
         fair_line_from_payload(payload, sport="Baseball", league="MLB", observed_at=START) is None
     )
+
+
+def test_fair_line_three_way_books_win_and_carry_the_draw():
+    payload = odds_payload((1.9, 1.9))
+    payload["bookmakers"].append(draw_book(2.0, 3.0, 4.0))
+    fair = fair_line_from_payload(payload, sport="Soccer", league="EPL", observed_at=START)
+
+    assert fair is not None and fair.books == 1
+    # 1/2 + 1/3 + 1/4 = 13/12, so the margin-free shares are 6/13, 4/13 and 3/13.
+    assert (fair.home_prob, fair.away_prob, fair.draw_prob) == pytest.approx(
+        (6 / 13, 4 / 13, 3 / 13)
+    )
+
+
+def test_consensus_probabilities_counts_the_books_it_averaged():
+    home, away = "Los Angeles Dodgers", "Atlanta Braves"
+    books = odds_payload((1.5, 2.5), (2.0, 2.0))["bookmakers"]
+    assert consensus_probabilities([*books, "not a book"], home, away) == pytest.approx(
+        ((0.625 + 0.5) / 2, (0.375 + 0.5) / 2, None, 2)
+    )
+    home_prob, away_prob, draw_prob, count = consensus_probabilities(
+        [*books, draw_book(2.0, 3.0, 4.0), draw_book(2.0, 3.0, 4.0)], home, away
+    )
+    assert (home_prob, away_prob, draw_prob, count) == pytest.approx((6 / 13, 4 / 13, 3 / 13, 2))
+    assert consensus_probabilities([], home, away) is None
 
 
 def snapshot(payload: dict, observed_at: datetime) -> OddsSnapshot:
@@ -335,6 +406,28 @@ def test_evaluate_reports_no_line_outside_the_window_or_for_other_teams():
     assert (verdict.status, verdict.sides) == ("no-line", ())
 
 
+def test_evaluate_judges_the_draw_of_a_three_way_market():
+    soccer = offer(home="Arsenal FC", away="Leeds United", home_price=2.0, away_price=4.2)
+    soccer = Offer(**{**vars(soccer), "draw_price": 3.6})
+    fair = line(home="Arsenal", away="Leeds United", home_prob=0.5)
+    fair = FairLine(**{**vars(fair), "away_prob": 0.25, "draw_prob": 0.25})
+
+    [verdict] = evaluate([soccer], [fair], min_edge=0.03)
+
+    assert [side.team for side in verdict.sides] == ["Leeds United", "Draw", "Arsenal FC"]
+    assert [side.edge for side in verdict.sides] == [0.05, -0.1, 0.0]
+    assert [side.value for side in verdict.sides] == [True, False, False]
+
+
+def test_evaluate_never_compares_two_way_and_three_way_prices():
+    two_way_offer = offer(home="Arsenal FC", away="Leeds United")
+    three_way_line = FairLine(
+        **{**vars(line(home="Arsenal", away="Leeds United")), "draw_prob": 0.25}
+    )
+    [verdict] = evaluate([two_way_offer], [three_way_line], min_edge=0.0)
+    assert verdict.status == "no-line"
+
+
 def test_evaluate_picks_the_nearest_game_of_a_doubleheader():
     first = line(start=START - timedelta(hours=1), home_prob=0.7, external_id="game-1")
     second = line(start=START + timedelta(hours=2), home_prob=0.5, external_id="game-2")
@@ -347,12 +440,14 @@ def test_evaluate_picks_the_nearest_game_of_a_doubleheader():
 
 @pytest.fixture
 def service(tmp_path):
-    OddsArchive(tmp_path).write([snapshot(odds_payload((1.5, 2.5)), START - timedelta(hours=6))])
-    lines = CachedLines(lambda: load_fair_lines(tmp_path, now=START - timedelta(hours=1)))
-    server = OverlayServer(("127.0.0.1", 0), lines=lines, min_edge=0.03)
+    archive = tmp_path / "archive"
+    OddsArchive(archive).write([snapshot(odds_payload((1.5, 2.5)), START - timedelta(hours=6))])
+    lines = CachedLines(lambda: load_fair_lines(archive, now=START - timedelta(hours=1)))
+    coverage = CoverageTracker(tmp_path / "coverage.json", now=lambda: START)
+    server = OverlayServer(("127.0.0.1", 0), lines=lines, min_edge=0.03, coverage=coverage)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
-    yield f"http://127.0.0.1:{server.server_port}", tmp_path
+    yield f"http://127.0.0.1:{server.server_port}", archive
     server.shutdown()
     server.server_close()
 
@@ -392,6 +487,7 @@ def test_service_evaluates_a_page_response_and_stores_nothing(service):
     [verdict] = body["events"]
     assert verdict["status"] == "matched"
     assert [side["value"] for side in verdict["sides"]] == [True, True]
+    assert body["page"] == {"event_ids": ["1"], "priced_ids": ["1"]}
     assert sorted(path.relative_to(archive) for path in archive.rglob("*")) == before
 
 
@@ -405,6 +501,68 @@ def test_the_handler_echoes_no_request_line_to_the_terminal(service, capfd):
     assert capfd.readouterr().err == ""
     with OverlayServer(("127.0.0.1", 0), lines=list) as server:
         assert server.RequestHandlerClass is OverlayHandler
+
+
+def test_service_coverage_file_holds_counts_only(service, tmp_path):
+    base, _ = service
+    unpriced = event("2", home="Arsenal FC", away="Leeds United", markets=[])
+    unpriced["class"], unpriced["category"] = {"name": "England"}, {"code": "FOOTBALL"}
+    unpriced["type"] = {"name": "Premier League"}
+    payload = json.dumps(time_band(event(home_prices=(price(1.75),)), unpriced))
+
+    call(f"{base}/evaluate", payload.encode())
+    call(f"{base}/evaluate", payload.encode())
+
+    text = (tmp_path / "coverage.json").read_text(encoding="utf-8")
+    assert json.loads(text) == {
+        "days": {
+            "2026-10-03": {
+                "BASEBALL|MLB": {"events": 1, "priced": 1},
+                "FOOTBALL|England / Premier League": {"events": 1, "priced": 0},
+            }
+        }
+    }
+    for leaked in ("Dodgers", "Arsenal", "1.75", '"1"', '"2"'):
+        assert leaked not in text
+
+
+def test_coverage_survives_a_restart_without_double_counting(tmp_path):
+    path = tmp_path / "coverage.json"
+    mlb = [CatalogEntry("1", "BASEBALL", "MLB"), CatalogEntry("2", "BASEBALL", "MLB")]
+
+    CoverageTracker(path, now=lambda: START).record(mlb, {"1"})
+    restarted = CoverageTracker(path, now=lambda: START)
+    restarted.record(mlb[:1], {"1"})  # a reload after a restart sees part of the page again
+    restarted.record([CatalogEntry("3", "TENNIS", "ATP")], set())
+
+    assert summarize(load_coverage(path)) == [
+        {"sport": "BASEBALL", "league": "MLB", "events": 2, "priced": 1},
+        {"sport": "TENNIS", "league": "ATP", "events": 1, "priced": 0},
+    ]
+
+
+def test_coverage_lines_report_share_by_sport_and_league():
+    rows = [
+        {"sport": "FOOTBALL", "league": "England / Premier League", "events": 6, "priced": 3},
+        {"sport": "BASEBALL", "league": "MLB", "events": 2, "priced": 2},
+    ]
+    lines = coverage_lines(rows)
+    assert lines[0] == "priced 5 of 8 events browsed (62%)"
+    assert any(line.startswith("FOOTBALL") and "75%" in line and "50%" in line for line in lines)
+    assert coverage_lines([]) == [
+        "no Mise-o-jeu+ events recorded yet; browse with the overlay running"
+    ]
+
+
+def test_cli_overlay_coverage_prints_the_report(monkeypatch, tmp_path, capsys):
+    path = tmp_path / "coverage.json"
+    CoverageTracker(path, now=lambda: START).record([CatalogEntry("1", "BASEBALL", "MLB")], {"1"})
+    monkeypatch.setattr(cli, "COVERAGE_PATH", path)
+
+    assert cli.main(["overlay-coverage"]) == 0
+
+    out = capsys.readouterr().out
+    assert "priced 1 of 1 events browsed (100%)" in out and str(path) in out
 
 
 def test_service_rejects_bad_requests(service):

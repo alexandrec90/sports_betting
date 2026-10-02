@@ -23,14 +23,28 @@ depending on a provider, and preserve the provider name and raw response snapsho
    players, and standings — none of which is a fixture feed.
    Sources: <https://www.balldontlie.io/account/>, <https://docs.balldontlie.io/>, and
    <https://epl.balldontlie.io/>
-4. **The Odds API (implemented and scheduled):** the current free plan is 25 calls/day and
-   only NBA/MLB moneylines; US$29/month adds 25 sports, spreads, and totals. Archive every odds
+4. **The Odds API (implemented and scheduled):** re-checked 2026-10-02, the free Starter plan
+   is **500 credits a month for all sports and markets** (an earlier note here said 25
+   calls/day for NBA/MLB only; that was wrong or has changed). Paid plans start at US$30/month
+   for 20,000 credits. A `/odds` call costs `markets x regions` credits, and nothing when it
+   returns no events. `/sports` and `/sports/{key}/events` are free. Archive every odds
    observation with its retrieval timestamp—using closing odds discovered after an event in a
    backtest would leak future information. Requests go to `https://api.the-odds-api.com/v4`
    as `GET /sports/{sport_key}/odds/`, authenticated with an `apiKey` **query parameter**
    (not a header), and `regions` is required — see `THE_ODDS_API_REGIONS`.
    Sources: <https://the-odds-api.com/#get-access> and
    <https://the-odds-api.com/liveapi/guides/v4/>
+5. **API-Sports / API-Football (probe only):** 100 free requests a day *per sport API* with
+   one key, every endpoint, including a pre-match odds feed updated daily. Free plans are
+   limited to certain seasons, so whether current-season odds are readable is unknown until
+   `sports-betting probe-api-sports` runs with a key. It is the largest possible free odds
+   source (about 1,100 soccer leagues, plus hockey, basketball and others); build its
+   collector only if the probe's verdict is `usable`.
+   Source: <https://www.api-football.com/news/post/how-to-get-started-with-api-football-the-complete-beginners-guide>
+6. **ClubElo (not implemented):** <http://clubelo.com/API> publishes free win/draw/loss
+   probabilities for upcoming European and South American club matches, lower divisions
+   included. It is a rating model, weaker than a market price, and states no terms of use:
+   ask its author before collecting it.
 
 League-operated NHL/MLB endpoints and ESPN endpoints can be useful for research, but their
 public interfaces are undocumented or do not offer a clear data licence/SLA. Treat them as
@@ -45,6 +59,8 @@ accounts, then put the keys in the checkout's uncommitted `.env`:
 - football-data.org: <https://www.football-data.org/client/register> → `FOOTBALL_DATA_API_KEY`
 - BALLDONTLIE: <https://app.balldontlie.io/signup> → `BALLDONTLIE_API_KEY`
 - The Odds API: <https://the-odds-api.com/#get-access> → `THE_ODDS_API_KEY`
+- API-Sports (optional, for the probe): <https://dashboard.api-football.com/register> →
+  `API_SPORTS_KEY`
 
 The scheduler remains useful before these are set: those jobs report `skipped`, and
 TheSportsDB continues collecting. Keys belong only in `.env`; they are removed from raw
@@ -109,8 +125,13 @@ wants which sports. Jobs are single-writer and run every six hours:
 - football-data.org: two date requests/run, paced at least 7 seconds apart versus 10/min free.
 - BALLDONTLIE: two dates for each of three free sports, paced 13 seconds apart versus 5/min.
 - TheSportsDB: two dates per configured sport, conservatively paced 2 seconds apart.
-- The Odds API: NBA and MLB once/run, eight planned calls/day. A persistent 20/day safety
-  budget stays below the provider's 25/day free limit even across process restarts.
+- The Odds API: a monthly credit budget (`THE_ODDS_API_MONTHLY_BUDGET`, default 450 of the
+  free 500) held in the persistent ledger, so restarts cannot reset it. Each run lists
+  in-season sports for free, keeps the focus leagues (`THE_ODDS_API_SPORTS`, priority order,
+  globs allowed), and pays only for those with a game inside `THE_ODDS_API_LOOKAHEAD_HOURS`.
+  Stalest league first, at most an even share of the credits left this month
+  (`sports_betting/odds_plan.py`). The provider's own `x-requests-remaining` also stops the
+  job 25 credits short of zero. Last-refresh times live in `logs/odds-api-refresh.json`.
 
 ## Why Betfair is not the execution target
 
@@ -162,6 +183,11 @@ Until then:
   value overlay below does this. Expect Mise-o-jeu+ margins to differ from the archived books',
   so set the edge threshold against the price actually offered, never against an archived
   consensus price.
+- **Scope collection to what Mise-o-jeu+ offers.** On 2026-10-02 its sport tree included
+  NHL and European hockey, NFL and CFL, wide soccer coverage (EPL, Spain, Italy, Germany,
+  France, MLS, and others), MLB, NBA and many basketball leagues, ATP/WTA/Challenger tennis,
+  golf, MMA, boxing, F1/NASCAR, esports, and smaller sports. `sports-betting
+  overlay-coverage` measures which of the leagues the operator actually browses get priced.
 
 ### The value overlay (operator's choice, 2026-10-02)
 
@@ -174,7 +200,7 @@ to plain browsing as possible. They are tested in `tests/test_overlay.py`; keep 
 | --- | --- |
 | No extra traffic to the sportsbook | `capture.js` reads only responses the page already requested; it never calls `fetch` itself |
 | Odds queries only | The URL pattern allows the content-service event lists, never bet, account, payment or identity services |
-| Nothing stored | Verdicts live in tab memory; the extension has no `storage` permission; the service writes no file |
+| No odds stored | Verdicts live in tab memory; the extension has no `storage` permission. The service writes one file, `logs/overlay-coverage.json`: counts per day, sport and league, with no event IDs, teams or prices |
 | No wagering | The extension never touches the bet slip, login or account; bets stay manual |
 | Local only | The service binds `127.0.0.1`; the extension's only host permission is that port |
 
@@ -184,10 +210,6 @@ the extension does. If the overlay stops seeing odds after a site update, check 
 things first.
 
 The proof of concept's fair line is the margin-free consensus of the The Odds API snapshots
-(`sports_betting/overlay/lines.py`), so it covers only what that free plan collects: NBA and
-MLB moneylines. Replace it with model probabilities once a model exists.
-- **Scope collection to what Mise-o-jeu+ offers.** On 2026-10-02 its sport tree included
-  NHL and European hockey, NFL and CFL, wide soccer coverage (EPL, Spain, Italy, Germany,
-  France, MLS, and others), MLB, NBA and many basketball leagues, ATP/WTA/Challenger tennis,
-  golf, MMA, boxing, F1/NASCAR, esports, and smaller sports. Check the site by hand when
-  choosing a league; the list changes with the season.
+(`sports_betting/overlay/lines.py`): two-way moneylines, and three-way win/draw/loss for soccer
+(Mise-o-jeu+'s `MR` market). It covers only the focus leagues the Odds API job collects.
+Replace it with model probabilities once a model exists.

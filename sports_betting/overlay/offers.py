@@ -1,4 +1,4 @@
-"""Parse the moneyline offers out of a Mise-o-jeu+ (OpenBet content-service) response.
+"""Parse the winner offers out of a Mise-o-jeu+ (OpenBet content-service) response.
 
 The page's `time-band-event-list`, `event-list` and `events-by-ids` responses all nest the
 same event object at different depths, so this walks the payload rather than following
@@ -12,11 +12,19 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
-#: OpenBet's two-way winner market. Three-way soccer markets (`MR`) are out of scope
-#: for the proof of concept: the free fair-line source has no draw price to compare.
-MONEYLINE_SUBTYPE = "HH"
+#: OpenBet's winner markets: two-way (`HH`, outcomes H/A) and three-way (`MR`, H/D/A).
+WINNER_MARKETS = {"HH": {"H", "A"}, "MR": {"H", "D", "A"}}
 LIVE_PRICE = "LP"
 BASE_PRICE = "LP_BASE"
+
+
+@dataclass(frozen=True)
+class CatalogEntry:
+    """What the coverage report counts: an upcoming event's sport and league, no prices."""
+
+    event_id: str
+    sport: str
+    league: str
 
 
 @dataclass(frozen=True)
@@ -31,6 +39,7 @@ class Offer:
     home_price: float
     away_price: float
     boosted: bool
+    draw_price: float | None = None
 
 
 def _events(node: Any) -> Iterator[dict[str, Any]]:
@@ -45,6 +54,15 @@ def _events(node: Any) -> Iterator[dict[str, Any]]:
             yield from _events(value)
 
 
+def _mapping(value: Any) -> dict[str, Any]:
+    return value if isinstance(value, dict) else {}
+
+
+def _pre_match(event: dict[str, Any]) -> bool:
+    # Live prices move with the score; the fair line is pre-match only.
+    return not (event.get("started") or event.get("liveNow")) and bool(event.get("startTime"))
+
+
 def _price(outcome: dict[str, Any], price_type: str) -> float | None:
     for price in outcome.get("prices") or []:
         if isinstance(price, dict) and price.get("priceType") == price_type:
@@ -54,15 +72,11 @@ def _price(outcome: dict[str, Any], price_type: str) -> float | None:
     return None
 
 
-def _mapping(value: Any) -> dict[str, Any]:
-    return value if isinstance(value, dict) else {}
-
-
-def _moneyline(event: dict[str, Any]) -> dict[str, Any] | None:
+def _winner_market(event: dict[str, Any]) -> dict[str, Any] | None:
     for market in event["markets"]:
         if (
             isinstance(market, dict)
-            and market.get("subType") == MONEYLINE_SUBTYPE
+            and market.get("subType") in WINNER_MARKETS
             and market.get("active", True)
             and market.get("handicapValue") is None
         ):
@@ -71,23 +85,25 @@ def _moneyline(event: dict[str, Any]) -> dict[str, Any] | None:
 
 
 def _offer(event: dict[str, Any]) -> Offer | None:
-    # Live prices move with the score; the fair line is pre-match only.
-    if event.get("started") or event.get("liveNow") or not event.get("startTime"):
+    if not _pre_match(event):
         return None
-    market = _moneyline(event)
+    market = _winner_market(event)
     if market is None:
         return None
     prices: dict[str, tuple[str, float, bool]] = {}
     for outcome in market.get("outcomes") or []:
-        if not isinstance(outcome, dict) or outcome.get("subType") not in {"H", "A"}:
+        if not isinstance(outcome, dict) or not outcome.get("name"):
             continue
         live = _price(outcome, LIVE_PRICE)
-        if live is None or not outcome.get("name"):
+        if live is None:
             continue
         base = _price(outcome, BASE_PRICE)
-        boosted = base is not None and live > base
-        prices[outcome["subType"]] = (str(outcome["name"]), live, boosted)
-    if set(prices) != {"H", "A"}:
+        prices[str(outcome.get("subType"))] = (
+            str(outcome["name"]),
+            live,
+            base is not None and live > base,
+        )
+    if set(prices) != WINNER_MARKETS[market["subType"]]:
         return None
     category, league = _mapping(event.get("category")), _mapping(event.get("type"))
     return Offer(
@@ -100,12 +116,13 @@ def _offer(event: dict[str, Any]) -> Offer | None:
         away=prices["A"][0],
         home_price=prices["H"][1],
         away_price=prices["A"][1],
-        boosted=prices["H"][2] or prices["A"][2],
+        boosted=any(boosted for _, _, boosted in prices.values()),
+        draw_price=prices["D"][1] if "D" in prices else None,
     )
 
 
 def parse_offers(payload: Any) -> list[Offer]:
-    """Every pre-match two-way moneyline in `payload`, one per event."""
+    """Every pre-match winner market (two- or three-way) in `payload`, one per event."""
     offers: dict[str, Offer] = {}
     for event in _events(payload):
         try:
@@ -115,3 +132,22 @@ def parse_offers(payload: Any) -> list[Offer]:
         if offer is not None:
             offers[offer.event_id] = offer
     return sorted(offers.values(), key=lambda offer: (offer.start, offer.event_id))
+
+
+def parse_catalog(payload: Any) -> list[CatalogEntry]:
+    """Every upcoming event in `payload`, priced or not, for the coverage report."""
+    entries: dict[str, CatalogEntry] = {}
+    for event in _events(payload):
+        if not _pre_match(event) or event.get("id") is None:
+            continue
+        category, league, region = (
+            _mapping(event.get("category")),
+            _mapping(event.get("type")),
+            _mapping(event.get("class")),
+        )
+        sport = str(category.get("code") or category.get("name") or "UNKNOWN")
+        name = str(league.get("name") or "unknown")
+        if region.get("name") and str(region["name"]) not in name:
+            name = f"{region['name']} / {name}"
+        entries[str(event["id"])] = CatalogEntry(str(event["id"]), sport, name)
+    return list(entries.values())

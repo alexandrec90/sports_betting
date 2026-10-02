@@ -82,18 +82,36 @@ moneylines beat a fair price. It never places a bet, touches the bet slip or acc
 stores odds. The reasons for each limit are in
 [data sources](docs/data-sources.md#the-value-overlay-operators-choice-2026-10-02).
 
-1. Collect fair lines (NBA/MLB on the free The Odds API plan):
+1. Collect fair lines. The scheduler does this every six hours; to do it now:
    `uv run sports-betting collect --provider the-odds-api`
 2. Start the local service and leave it running:
    `uv run sports-betting overlay-serve` (`--min-edge 0.05` to demand a 5% edge)
 3. In Chrome, open `chrome://extensions`, turn on **Developer mode**, click **Load unpacked**,
    and pick `extensions/mise-overlay/`.
-4. Open an NBA or MLB competition page on Mise-o-jeu+. The panel lists each matched game:
-   the offered price, the minimum price worth taking, and the edge. A green edge means value.
+4. Open a competition page on Mise-o-jeu+ (NHL, NFL, MLB, a top soccer league, …). The panel
+   lists each matched game: the offered price, the minimum price worth taking, and the edge.
+   A green edge means value. Soccer shows the draw as a third line.
 
 A side is value when `price × fair probability − 1 ≥ min edge`. The fair probability is the
-average, across bookmakers, of each book's margin-free moneyline. Games with no fair line,
-which is every sport the free plan does not cover, are counted but not judged.
+average, across bookmakers, of each book's margin-free moneyline. Games with no fair line are
+counted but not judged. See which leagues you browse and how many get priced:
+
+```bash
+uv run sports-betting overlay-coverage
+```
+
+### Which leagues get fair lines
+
+The free The Odds API plan is 500 credits a month for all sports, so the collector spends them
+on a focus list rather than everything: `THE_ODDS_API_SPORTS` in `.env`, in priority order,
+globs allowed. By default that is the NHL, NFL, NBA, MLB, CFL, NCAAF, the five big European
+soccer leagues, the Champions League, MLS, and ATP/WTA tennis. A league costs credits only
+when it has a game in the next 36 hours, and the month's budget is spread evenly over the
+remaining runs. If the overlay-coverage report shows a league you bet on going unpriced, add
+it to the list.
+
+`uv run sports-betting probe-api-sports` checks whether an API-Sports free key (set
+`API_SPORTS_KEY`) can read current-season odds, which would widen coverage a lot.
 
 ## Historical bulk imports
 

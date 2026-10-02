@@ -2,6 +2,8 @@
 // memory only: nothing is written to extension storage, and closing the tab drops them.
 (() => {
   const verdicts = new Map();
+  const pageEvents = new Set();
+  const pagePriced = new Set();
   const state = { status: "waiting for odds on this page…", linesAsOf: null, minEdge: null };
   let root = null;
   let list = null;
@@ -68,6 +70,7 @@
   function render() {
     if (!root) return;
     const parts = [state.status];
+    if (pageEvents.size) parts.push(`priced ${pagePriced.size} of ${pageEvents.size} events seen`);
     if (state.minEdge !== null) parts.push(`min edge ${percent(state.minEdge)}`);
     if (state.linesAsOf) parts.push(`fair lines as of ${time(state.linesAsOf)}`);
     statusLine.textContent = parts.join(" · ");
@@ -94,8 +97,8 @@
       }
       list.append(row);
     }
-    const unmatched = all.length - matched.length;
-    if (unmatched) list.append(element("div", "muted", `${unmatched} event(s) with no fair line`));
+    const unpriced = pageEvents.size - pagePriced.size;
+    if (unpriced) list.append(element("div", "muted", `${unpriced} event(s) with no fair line`));
     if (!all.length) list.append(element("div", "muted", "Open a competition page to see verdicts."));
   }
 
@@ -109,6 +112,8 @@
     state.linesAsOf = response.lines_as_of;
     state.minEdge = response.min_edge;
     for (const event of response.events || []) verdicts.set(event.event_id, event);
+    for (const id of response.page?.event_ids || []) pageEvents.add(id);
+    for (const id of response.page?.priced_ids || []) pagePriced.add(id);
     render();
   }
 

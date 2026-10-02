@@ -21,6 +21,11 @@ from sports_betting.historical import (
     BulkImportSummary,
     HistoricalImporters,
 )
+from sports_betting.overlay.lines import load_fair_lines
+from sports_betting.overlay.server import DEFAULT_MIN_EDGE as OVERLAY_MIN_EDGE
+from sports_betting.overlay.server import DEFAULT_PORT as OVERLAY_PORT
+from sports_betting.overlay.server import HOST as OVERLAY_HOST
+from sports_betting.overlay.server import CachedLines, OverlayServer
 from sports_betting.pipeline import ingest_events
 from sports_betting.providers import TheSportsDbClient
 from sports_betting.scheduler import CollectionJobs, serve
@@ -52,32 +57,21 @@ def build_parser() -> argparse.ArgumentParser:
         default="all",
     )
     subparsers.add_parser("serve", help="run the persistent free-tier collection scheduler")
+    overlay = subparsers.add_parser(
+        "overlay-serve", help="serve fair-line verdicts to the Mise-o-jeu+ browser overlay"
+    )
+    overlay.add_argument("--port", type=int, default=OVERLAY_PORT)
+    overlay.add_argument(
+        "--min-edge",
+        type=float,
+        default=OVERLAY_MIN_EDGE,
+        help="smallest edge flagged as value, e.g. 0.03 for 3%%",
+    )
     health = subparsers.add_parser("health", help="is collection actually pulling data?")
     health.add_argument(
         "--quiet", action="store_true", help="print only the problem jobs, not every job"
     )
-    bulk = subparsers.add_parser("bulk-import", help="import free historical data dumps")
-    bulk_sources = bulk.add_subparsers(dest="bulk_source", required=True)
-    football = bulk_sources.add_parser("football-data", help="soccer results and bookmaker odds")
-    _add_year_range(football, default_start=2000)
-    football.add_argument("--leagues", default="E0,D1,I1,SP1,F1")
-    extra = bulk_sources.add_parser(
-        "football-data-extra", help="soccer results and closing odds, 16 extra countries"
-    )
-    extra.add_argument("--countries", default=",".join(FOOTBALL_DATA_EXTRA_COUNTRIES))
-    tennis = bulk_sources.add_parser("tennis-data", help="ATP/WTA results and bookmaker odds")
-    _add_year_range(tennis, default_start=TENNIS_DATA_FIRST_XLSX_YEAR)
-    tennis.add_argument("--tours", default="atp,wta")
-    nfl = bulk_sources.add_parser("nflverse", help="NFL play-by-play Parquet")
-    _add_year_range(nfl, default_start=1999)
-    money = bulk_sources.add_parser("moneypuck", help="NHL shot-level ZIP files")
-    _add_year_range(money, default_start=2007)
-    bulk_sources.add_parser("moneypuck-games", help="all NHL team game-level data")
-    statsbomb = bulk_sources.add_parser("statsbomb", help="soccer event data")
-    statsbomb.add_argument("--competition-id", type=int, required=True)
-    statsbomb.add_argument("--season-id", type=int, required=True)
-    statsbomb.add_argument("--max-matches", type=int)
-    subparsers.add_parser("statsbomb-list", help="list importable competition and season IDs")
+    _add_bulk_parsers(subparsers)
     sync = subparsers.add_parser(
         "archive-sync", help="mirror the bronze archive to the shared object store"
     )
@@ -100,6 +94,32 @@ def build_parser() -> argparse.ArgumentParser:
         "archive-recatalog", help="rewrite _catalog manifests into the shared lake shape"
     )
     return parser
+
+
+def _add_bulk_parsers(subparsers: argparse._SubParsersAction) -> None:
+    """The `bulk-import` subcommand's sources, and the StatsBomb catalogue listing."""
+    bulk = subparsers.add_parser("bulk-import", help="import free historical data dumps")
+    bulk_sources = bulk.add_subparsers(dest="bulk_source", required=True)
+    football = bulk_sources.add_parser("football-data", help="soccer results and bookmaker odds")
+    _add_year_range(football, default_start=2000)
+    football.add_argument("--leagues", default="E0,D1,I1,SP1,F1")
+    extra = bulk_sources.add_parser(
+        "football-data-extra", help="soccer results and closing odds, 16 extra countries"
+    )
+    extra.add_argument("--countries", default=",".join(FOOTBALL_DATA_EXTRA_COUNTRIES))
+    tennis = bulk_sources.add_parser("tennis-data", help="ATP/WTA results and bookmaker odds")
+    _add_year_range(tennis, default_start=TENNIS_DATA_FIRST_XLSX_YEAR)
+    tennis.add_argument("--tours", default="atp,wta")
+    nfl = bulk_sources.add_parser("nflverse", help="NFL play-by-play Parquet")
+    _add_year_range(nfl, default_start=1999)
+    money = bulk_sources.add_parser("moneypuck", help="NHL shot-level ZIP files")
+    _add_year_range(money, default_start=2007)
+    bulk_sources.add_parser("moneypuck-games", help="all NHL team game-level data")
+    statsbomb = bulk_sources.add_parser("statsbomb", help="soccer event data")
+    statsbomb.add_argument("--competition-id", type=int, required=True)
+    statsbomb.add_argument("--season-id", type=int, required=True)
+    statsbomb.add_argument("--max-matches", type=int)
+    subparsers.add_parser("statsbomb-list", help="list importable competition and season IDs")
 
 
 def _add_year_range(parser: argparse.ArgumentParser, *, default_start: int) -> None:
@@ -218,116 +238,170 @@ def _run_bulk_import(importers: HistoricalImporters, args: argparse.Namespace) -
     return bulk_function[args.bulk_source]()
 
 
+def _overlay_serve(args: argparse.Namespace) -> int:
+    if not 0 <= args.min_edge < 1:
+        raise ValueError("--min-edge is a fraction between 0 and 1, e.g. 0.03")
+    root = get_settings().archive_root
+    lines = CachedLines(lambda: load_fair_lines(root))
+    server = OverlayServer((OVERLAY_HOST, args.port), lines=lines, min_edge=args.min_edge)
+    count = len(lines())
+    sys.stdout.write(
+        f"overlay: {count} upcoming fair line(s) from {root}; "
+        f"listening on http://{OVERLAY_HOST}:{server.server_port} (Ctrl+C to stop)\n"
+    )
+    if not count:
+        sys.stdout.write(
+            "overlay: no lines yet; run `sports-betting collect --provider the-odds-api`\n"
+        )
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        server.server_close()
+    return 0
+
+
+def _serve(_args: argparse.Namespace, _report_path: Path) -> int:
+    serve()
+    return 0
+
+
+def _archive_recatalog(_args: argparse.Namespace, report_path: Path) -> int:
+    settings = get_settings()
+    # Needs no store: manifests are derived from local Parquet, and a checkout with
+    # no mirror configured is exactly the one most likely to still hold old-shape
+    # manifests. Re-run archive-sync afterwards to push the rewritten copies.
+    rebuilt = rebuild_catalogs(settings.archive_root)
+    payload = {"ok": True, "rebuilt": rebuilt, "root": str(settings.archive_root)}
+    _write_report(payload, report_path)
+    sys.stdout.write(f"rebuilt {len(rebuilt)} manifest(s): {', '.join(rebuilt) or '-'}\n")
+    sys.stdout.write(f"artifact: {report_path}\n")
+    return 0
+
+
+def _archive_mirror(args: argparse.Namespace, report_path: Path) -> int:
+    """`archive-sync` and `archive-restore`: the two directions of the object-store mirror."""
+    settings = get_settings()
+    object_store = store_for(settings)
+    if args.command == "archive-restore":
+        sync_summary = restore_sources(settings.archive_root, object_store)
+    else:
+        sync_summary = ArchiveSync(
+            settings.archive_root,
+            object_store,
+            backend=settings.archive_backend,
+            max_object_bytes=args.max_object_mb * 1024 * 1024,
+        ).run(prune=args.prune, dry_run=args.dry_run)
+    payload = sync_summary.as_dict()
+    _write_report(payload, report_path)
+    sys.stdout.write("\n".join(sync_lines(payload)) + "\n")
+    sys.stdout.write(f"artifact: {report_path}\n")
+    return 0 if payload["ok"] else 1
+
+
+def _health(args: argparse.Namespace, _report_path: Path) -> int:
+    settings = get_settings()
+    store = HealthStore(settings.scheduler_health_file)
+    if not store.seed():
+        sys.stdout.write(
+            f"health: no readable artifact at {settings.scheduler_health_file}; "
+            "has the scheduler run?\n"
+        )
+        return 1
+    report = store.report()
+    sys.stdout.write("\n".join(health_lines(report, quiet=args.quiet)) + "\n")
+    sys.stdout.write(f"artifact: {settings.scheduler_health_file}\n")
+    return 0 if report["ok"] else 1
+
+
+def _collect(args: argparse.Namespace, _report_path: Path) -> int:
+    jobs = CollectionJobs(get_settings())
+    function = {
+        "football-data": jobs.football_data,
+        "thesportsdb": jobs.thesportsdb,
+        "balldontlie": jobs.balldontlie,
+        "the-odds-api": jobs.the_odds_api,
+        "historical-bulk": jobs.historical_bulk,
+    }
+    outcomes = (
+        jobs.run_all() if args.provider == "all" else {args.provider: function[args.provider]()}
+    )
+    payload = {
+        "ok": all(outcome.status != "error" for outcome in outcomes.values()),
+        "jobs": {name: asdict(outcome) for name, outcome in outcomes.items()},
+    }
+    _write_report(payload)
+    sys.stdout.write(json.dumps(payload, sort_keys=True) + "\n")
+    return 0 if payload["ok"] else 1
+
+
+def _bulk(args: argparse.Namespace, _report_path: Path) -> int:
+    """`bulk-import` and `statsbomb-list`, which share the throttled importers."""
+    settings = get_settings()
+    from sports_betting.throttle import ProviderThrottle
+
+    gate = ProviderThrottle(
+        "historical-bulk", min_interval_seconds=settings.bulk_request_interval_seconds
+    )
+    with HistoricalImporters(
+        settings.archive_root,
+        before_request=gate,
+        max_download_bytes=settings.bulk_max_download_bytes,
+    ) as importers:
+        if args.command == "statsbomb-list":
+            competitions = importers.statsbomb_competitions()
+            payload = {"ok": True, "competitions": competitions}
+        else:
+            summary = _run_bulk_import(importers, args)
+            payload = {"ok": True, **asdict(summary)}
+    _write_report(payload)
+    sys.stdout.write(json.dumps(payload, default=str, sort_keys=True) + "\n")
+    return 0
+
+
+def _ingest_events(args: argparse.Namespace, _report_path: Path) -> int:
+    start, end = _date_range(args)
+    settings = get_settings()
+    with TheSportsDbClient(
+        settings.sportsdb_api_key,
+        timeout_seconds=settings.sportsdb_timeout_seconds,
+    ) as provider:
+        result = ingest_events(
+            provider,
+            EventArchive(settings.archive_root),
+            start=start,
+            end=end,
+            sport=args.sport,
+            league=args.league,
+        )
+    payload = {"ok": True, **asdict(result), "archive_root": str(settings.archive_root)}
+    _write_report(payload)
+    sys.stdout.write(json.dumps(payload, default=list, sort_keys=True) + "\n")
+    return 0
+
+
+# One handler per subcommand, each taking the parsed args and the artifact path a failure
+# is reported to; `main` owns that failure path, so a handler only raises.
+_COMMANDS: dict[str, Callable[[argparse.Namespace, Path], int]] = {
+    "serve": _serve,
+    "overlay-serve": lambda args, _report_path: _overlay_serve(args),
+    "archive-recatalog": _archive_recatalog,
+    "archive-sync": _archive_mirror,
+    "archive-restore": _archive_mirror,
+    "health": _health,
+    "collect": _collect,
+    "bulk-import": _bulk,
+    "statsbomb-list": _bulk,
+    "ingest-events": _ingest_events,
+}
+
+
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     report_path = ARCHIVE_REPORT_PATH if args.command.startswith("archive-") else REPORT_PATH
     try:
-        if args.command == "serve":
-            serve()
-            return 0
-        if args.command == "archive-recatalog":
-            settings = get_settings()
-            # Needs no store: manifests are derived from local Parquet, and a checkout with
-            # no mirror configured is exactly the one most likely to still hold old-shape
-            # manifests. Re-run archive-sync afterwards to push the rewritten copies.
-            rebuilt = rebuild_catalogs(settings.archive_root)
-            payload = {"ok": True, "rebuilt": rebuilt, "root": str(settings.archive_root)}
-            _write_report(payload, report_path)
-            sys.stdout.write(f"rebuilt {len(rebuilt)} manifest(s): {', '.join(rebuilt) or '-'}\n")
-            sys.stdout.write(f"artifact: {report_path}\n")
-            return 0
-        if args.command in {"archive-sync", "archive-restore"}:
-            settings = get_settings()
-            object_store = store_for(settings)
-            if args.command == "archive-restore":
-                sync_summary = restore_sources(settings.archive_root, object_store)
-            else:
-                sync_summary = ArchiveSync(
-                    settings.archive_root,
-                    object_store,
-                    backend=settings.archive_backend,
-                    max_object_bytes=args.max_object_mb * 1024 * 1024,
-                ).run(prune=args.prune, dry_run=args.dry_run)
-            payload = sync_summary.as_dict()
-            _write_report(payload, report_path)
-            sys.stdout.write("\n".join(sync_lines(payload)) + "\n")
-            sys.stdout.write(f"artifact: {report_path}\n")
-            return 0 if payload["ok"] else 1
-        if args.command == "health":
-            settings = get_settings()
-            store = HealthStore(settings.scheduler_health_file)
-            if not store.seed():
-                sys.stdout.write(
-                    f"health: no readable artifact at {settings.scheduler_health_file}; "
-                    "has the scheduler run?\n"
-                )
-                return 1
-            report = store.report()
-            sys.stdout.write("\n".join(health_lines(report, quiet=args.quiet)) + "\n")
-            sys.stdout.write(f"artifact: {settings.scheduler_health_file}\n")
-            return 0 if report["ok"] else 1
-        if args.command == "collect":
-            jobs = CollectionJobs(get_settings())
-            function = {
-                "football-data": jobs.football_data,
-                "thesportsdb": jobs.thesportsdb,
-                "balldontlie": jobs.balldontlie,
-                "the-odds-api": jobs.the_odds_api,
-                "historical-bulk": jobs.historical_bulk,
-            }
-            outcomes = (
-                jobs.run_all()
-                if args.provider == "all"
-                else {args.provider: function[args.provider]()}
-            )
-            payload = {
-                "ok": all(outcome.status != "error" for outcome in outcomes.values()),
-                "jobs": {name: asdict(outcome) for name, outcome in outcomes.items()},
-            }
-            _write_report(payload)
-            sys.stdout.write(json.dumps(payload, sort_keys=True) + "\n")
-            return 0 if payload["ok"] else 1
-
-        if args.command in {"bulk-import", "statsbomb-list"}:
-            settings = get_settings()
-            from sports_betting.throttle import ProviderThrottle
-
-            gate = ProviderThrottle(
-                "historical-bulk", min_interval_seconds=settings.bulk_request_interval_seconds
-            )
-            with HistoricalImporters(
-                settings.archive_root,
-                before_request=gate,
-                max_download_bytes=settings.bulk_max_download_bytes,
-            ) as importers:
-                if args.command == "statsbomb-list":
-                    competitions = importers.statsbomb_competitions()
-                    payload = {"ok": True, "competitions": competitions}
-                else:
-                    summary = _run_bulk_import(importers, args)
-                    payload = {"ok": True, **asdict(summary)}
-            _write_report(payload)
-            sys.stdout.write(json.dumps(payload, default=str, sort_keys=True) + "\n")
-            return 0
-
-        start, end = _date_range(args)
-        settings = get_settings()
-        with TheSportsDbClient(
-            settings.sportsdb_api_key,
-            timeout_seconds=settings.sportsdb_timeout_seconds,
-        ) as provider:
-            result = ingest_events(
-                provider,
-                EventArchive(settings.archive_root),
-                start=start,
-                end=end,
-                sport=args.sport,
-                league=args.league,
-            )
-        payload = {"ok": True, **asdict(result), "archive_root": str(settings.archive_root)}
-        _write_report(payload)
-        sys.stdout.write(json.dumps(payload, default=list, sort_keys=True) + "\n")
-        return 0
+        return _COMMANDS[args.command](args, report_path)
     except Exception as exc:
         payload = {"ok": False, "error_type": type(exc).__name__, "error": str(exc)}
         _write_report(payload, report_path)

@@ -21,6 +21,11 @@ from sports_betting.historical import (
     BulkImportSummary,
     HistoricalImporters,
 )
+from sports_betting.overlay.lines import load_fair_lines
+from sports_betting.overlay.server import DEFAULT_MIN_EDGE as OVERLAY_MIN_EDGE
+from sports_betting.overlay.server import DEFAULT_PORT as OVERLAY_PORT
+from sports_betting.overlay.server import HOST as OVERLAY_HOST
+from sports_betting.overlay.server import CachedLines, OverlayServer
 from sports_betting.pipeline import ingest_events
 from sports_betting.providers import TheSportsDbClient
 from sports_betting.scheduler import CollectionJobs, serve
@@ -52,6 +57,16 @@ def build_parser() -> argparse.ArgumentParser:
         default="all",
     )
     subparsers.add_parser("serve", help="run the persistent free-tier collection scheduler")
+    overlay = subparsers.add_parser(
+        "overlay-serve", help="serve fair-line verdicts to the Mise-o-jeu+ browser overlay"
+    )
+    overlay.add_argument("--port", type=int, default=OVERLAY_PORT)
+    overlay.add_argument(
+        "--min-edge",
+        type=float,
+        default=OVERLAY_MIN_EDGE,
+        help="smallest edge flagged as value, e.g. 0.03 for 3%%",
+    )
     health = subparsers.add_parser("health", help="is collection actually pulling data?")
     health.add_argument(
         "--quiet", action="store_true", help="print only the problem jobs, not every job"
@@ -218,6 +233,30 @@ def _run_bulk_import(importers: HistoricalImporters, args: argparse.Namespace) -
     return bulk_function[args.bulk_source]()
 
 
+def _overlay_serve(args: argparse.Namespace) -> int:
+    if not 0 <= args.min_edge < 1:
+        raise ValueError("--min-edge is a fraction between 0 and 1, e.g. 0.03")
+    root = get_settings().archive_root
+    lines = CachedLines(lambda: load_fair_lines(root))
+    server = OverlayServer((OVERLAY_HOST, args.port), lines=lines, min_edge=args.min_edge)
+    count = len(lines())
+    sys.stdout.write(
+        f"overlay: {count} upcoming fair line(s) from {root}; "
+        f"listening on http://{OVERLAY_HOST}:{server.server_port} (Ctrl+C to stop)\n"
+    )
+    if not count:
+        sys.stdout.write(
+            "overlay: no lines yet; run `sports-betting collect --provider the-odds-api`\n"
+        )
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        server.server_close()
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     report_path = ARCHIVE_REPORT_PATH if args.command.startswith("archive-") else REPORT_PATH
@@ -225,6 +264,8 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "serve":
             serve()
             return 0
+        if args.command == "overlay-serve":
+            return _overlay_serve(args)
         if args.command == "archive-recatalog":
             settings = get_settings()
             # Needs no store: manifests are derived from local Parquet, and a checkout with

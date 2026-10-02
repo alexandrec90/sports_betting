@@ -130,3 +130,64 @@ of a website is not permission to automate it.
 - Loto-Québec online gaming statement:
   <https://societe.lotoquebec.com/en/offering/online-gaming>
 - Mise-o-jeu: <https://miseojeu.lotoquebec.com/en/home>
+
+## Mise-o-jeu+ is not a collection source
+
+Checked 2026-10-02. Mise-o-jeu+ (`miseojeuplus.espacejeux.com/sports`) is the only book this
+project's bets can be placed on, so its prices are the ones a recommendation must clear. It
+publishes **no data feed, API, or historical odds archive.**
+
+The page is an SG Digital (OpenBet) sportsbook front end. Its odds come from an undocumented,
+unauthenticated JSON service (`content.mojp-sgdigital-jel.com/content-service/api/v1/q/...`,
+e.g. `drilldown-tree`) behind Cloudflare. `robots.txt` allows everything, but that is not
+permission, and two things rule out a scheduled collector:
+
+- Loto-Québec's general Conditions of Use, which the Mise-o-jeu+ footer links and which name
+  `miseojeu.lotoquebec.com` and Espacejeux as part of the "Portal", say in §7: *"Except for the
+  purposes of navigating the Internet, or unless otherwise indicated, it is strictly prohibited
+  to copy, redistribute, reproduce, republish, store on any medium, retransmit or modify the
+  information contained on the Portal and Accounts, or to make public or commercial use
+  thereof in any way whatsoever."* Archiving its odds to Parquet is storing them on a medium.
+- The Loto-Québec pages load Radware (perfdrive/ShieldSquare) bot management. A plain HTTP
+  client gets a challenge page. Collecting anyway would mean working around an access control.
+
+Do not add a Mise-o-jeu+ provider, scraper, or browser-automation job unless Loto-Québec gives
+written permission. Ask through the Customer Service contact in §14 of the Conditions of Use.
+Until then:
+
+- **Train on other sources covering the same events.** Use the free bulk importers above plus
+  the scheduled providers. An outcome model learns from results and features, not from this
+  book's prices. Other books' odds remain a fair proxy for the market's implied probability.
+- **Apply Mise-o-jeu+ prices only at decision time, in the operator's own browser.** The
+  value overlay below does this. Expect Mise-o-jeu+ margins to differ from the archived books',
+  so set the edge threshold against the price actually offered, never against an archived
+  consensus price.
+
+### The value overlay (operator's choice, 2026-10-02)
+
+The operator chose a read-only browser overlay over typing prices in by hand. It is a grey
+area, not a cleared use: it reads the page's content while the operator browses, which is
+arguably still "navigating", but Loto-Québec has not said so. Its constraints keep it as close
+to plain browsing as possible. They are tested in `tests/test_overlay.py`; keep them:
+
+| Constraint | How it holds |
+| --- | --- |
+| No extra traffic to the sportsbook | `capture.js` reads only responses the page already requested; it never calls `fetch` itself |
+| Odds queries only | The URL pattern allows the content-service event lists, never bet, account, payment or identity services |
+| Nothing stored | Verdicts live in tab memory; the extension has no `storage` permission; the service writes no file |
+| No wagering | The extension never touches the bet slip, login or account; bets stay manual |
+| Local only | The service binds `127.0.0.1`; the extension's only host permission is that port |
+
+The page's sportsbook routes `fetch` through an XHR polyfill that requests a `blob`, so
+`capture.js` hooks XHR as well. Another script on the page also wraps `fetch` and XHR after
+the extension does. If the overlay stops seeing odds after a site update, check those two
+things first.
+
+The proof of concept's fair line is the margin-free consensus of the The Odds API snapshots
+(`sports_betting/overlay/lines.py`), so it covers only what that free plan collects: NBA and
+MLB moneylines. Replace it with model probabilities once a model exists.
+- **Scope collection to what Mise-o-jeu+ offers.** On 2026-10-02 its sport tree included
+  NHL and European hockey, NFL and CFL, wide soccer coverage (EPL, Spain, Italy, Germany,
+  France, MLS, and others), MLB, NBA and many basketball leagues, ATP/WTA/Challenger tennis,
+  golf, MMA, boxing, F1/NASCAR, esports, and smaller sports. Check the site by hand when
+  choosing a league; the list changes with the season.

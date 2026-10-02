@@ -75,6 +75,26 @@ while a schedule later becoming a final result remains auditable. The catalog is
 `_catalog/sports_events.json`. Override `ARCHIVE_ROOT` in `.env` when the lake lives elsewhere.
 See [data sources](docs/data-sources.md) for provider trade-offs and the Québec constraint.
 
+## Mise-o-jeu+ value overlay (proof of concept)
+
+A read-only Chrome extension shows, next to the Mise-o-jeu+ page you are browsing, which
+moneylines beat a fair price. It never places a bet, touches the bet slip or account, or
+stores odds. The reasons for each limit are in
+[data sources](docs/data-sources.md#the-value-overlay-operators-choice-2026-10-02).
+
+1. Collect fair lines (NBA/MLB on the free The Odds API plan):
+   `uv run sports-betting collect --provider the-odds-api`
+2. Start the local service and leave it running:
+   `uv run sports-betting overlay-serve` (`--min-edge 0.05` to demand a 5% edge)
+3. In Chrome, open `chrome://extensions`, turn on **Developer mode**, click **Load unpacked**,
+   and pick `extensions/mise-overlay/`.
+4. Open an NBA or MLB competition page on Mise-o-jeu+. The panel lists each matched game:
+   the offered price, the minimum price worth taking, and the edge. A green edge means value.
+
+A side is value when `price × fair probability − 1 ≥ min edge`. The fair probability is the
+average, across bookmakers, of each book's margin-free moneyline. Games with no fair line,
+which is every sport the free plan does not cover, are counted but not judged.
+
 ## Historical bulk imports
 
 The recommended free training dumps need no credentials. Start with a narrow range, verify

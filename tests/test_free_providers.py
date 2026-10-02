@@ -5,7 +5,7 @@ import pytest
 
 from sports_betting.providers.balldontlie import BallDontLieClient
 from sports_betting.providers.football_data import FootballDataClient
-from sports_betting.providers.odds_api import OddsApiClient
+from sports_betting.providers.odds_api import OddsApiClient, sport_family
 from sports_betting.providers.thesportsdb import SportsDataProviderError
 
 OBSERVED = datetime(2026, 8, 5, 12, tzinfo=UTC)
@@ -155,3 +155,75 @@ def test_odds_api_error_redacts_the_key_now_that_it_travels_in_the_query_string(
     assert "401" in message  # the status still reaches the health file
     # `from None` keeps the key-bearing httpx URL out of the chained traceback too.
     assert caught.value.__cause__ is None
+
+
+def test_odds_api_listings_are_free_and_report_the_providers_remaining_credits():
+    paid: list[int] = []
+    free: list[int] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        headers = {"x-requests-remaining": "471"}
+        if request.url.path == "/v4/sports/":
+            sports = [{"key": "icehockey_nhl", "active": True}, "x"]
+            return httpx.Response(200, json=sports, headers=headers)
+        assert request.url.path == "/v4/sports/icehockey_nhl/events"
+        events = [{"commence_time": "2026-10-04T00:00:00Z"}, {"commence_time": None}, {}]
+        return httpx.Response(200, json=events, headers=headers)
+
+    client = OddsApiClient(
+        "private-key",
+        before_request=lambda: paid.append(1),
+        before_free_request=lambda: free.append(1),
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+
+    assert client.remaining is None
+    assert client.sports() == [{"key": "icehockey_nhl", "active": True}]
+    assert client.event_starts("icehockey_nhl") == [datetime(2026, 10, 4, tzinfo=UTC)]
+    assert (len(paid), len(free), client.remaining) == (0, 2, 471)
+
+
+def test_odds_api_accepts_any_sport_and_records_its_family():
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/v4/sports/soccer_epl/odds/"
+        item = {
+            "id": "e1",
+            "sport_title": "EPL",
+            "commence_time": "2026-10-04T14:00:00Z",
+            "home_team": "Arsenal",
+            "away_team": "Leeds United",
+            "bookmakers": [],
+        }
+        return httpx.Response(200, json=[item])
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    [snapshot] = OddsApiClient("private-key", regions="us,eu", client=client).fetch("soccer_epl")
+
+    assert (snapshot.sport, snapshot.league_name) == ("Soccer", "EPL")
+    assert OddsApiClient("private-key", regions="us, eu,").cost_per_call == 2
+
+
+@pytest.mark.parametrize("key", ["", "Soccer EPL", "../sports", "soccer__epl"])
+def test_odds_api_rejects_malformed_sport_keys_before_any_request(key):
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise AssertionError("no request expected")
+
+    transport = httpx.Client(transport=httpx.MockTransport(handler))
+    client = OddsApiClient("private-key", client=transport)
+    with pytest.raises(ValueError, match="sport key"):
+        client.fetch(key)
+    with pytest.raises(ValueError, match="sport key"):
+        client.event_starts(key)
+
+
+@pytest.mark.parametrize(
+    ("key", "family"),
+    [
+        ("icehockey_nhl", "Ice Hockey"),
+        ("americanfootball_cfl", "American Football"),
+        ("tennis_atp_china_open", "Tennis"),
+        ("curling_world", "Curling"),
+    ],
+)
+def test_sport_family_maps_key_prefixes(key, family):
+    assert sport_family(key) == family

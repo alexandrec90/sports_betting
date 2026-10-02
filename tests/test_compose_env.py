@@ -37,7 +37,12 @@ HOST_ONLY = {
 }
 
 #: Pinned to in-container paths on purpose; the host defaults would be wrong there.
-CONTAINER_PATHS = {"archive_root", "scheduler_health_file", "provider_quota_file"}
+CONTAINER_PATHS = {
+    "archive_root",
+    "scheduler_health_file",
+    "provider_quota_file",
+    "odds_refresh_file",
+}
 
 PASSTHROUGH = re.compile(r"^\$\{(?P<name>[A-Z_]+):-(?P<default>.*)\}$")
 

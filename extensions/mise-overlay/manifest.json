@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Mise-o-jeu+ value overlay (research)",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Read-only: compares Mise-o-jeu+ moneylines with a fair line from the local sports-betting service. Never touches the bet slip or account.",
   "host_permissions": ["http://127.0.0.1:8765/*"],
   "background": { "service_worker": "background.js" },

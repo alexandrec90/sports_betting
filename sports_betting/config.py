@@ -18,6 +18,14 @@ _S3_REQUIRED = (
     "archive_s3_secret_access_key",
 )
 
+#: The leagues Mise-o-jeu+ offers that the free plan can keep fresh, most valuable first.
+DEFAULT_ODDS_FOCUS = (
+    "icehockey_nhl,americanfootball_nfl,basketball_nba,baseball_mlb,americanfootball_cfl,"
+    "americanfootball_ncaaf,soccer_epl,soccer_uefa_champs_league,soccer_spain_la_liga,"
+    "soccer_italy_serie_a,soccer_germany_bundesliga,soccer_france_ligue_one,soccer_usa_mls,"
+    "tennis_atp_*,tennis_wta_*"
+)
+
 
 class Settings(BaseSettings):
     """Application settings, structurally satisfying `data_lake.settings.ArchiveSettings`.
@@ -53,8 +61,15 @@ class Settings(BaseSettings):
     # EPL /matches needs a paid ALL-STAR plan; only nba/nfl/mlb games are free.
     balldontlie_sports: str = "nba,nfl,mlb"
     the_odds_api_key: str = ""
-    the_odds_api_sports: str = "basketball_nba,baseball_mlb"
+    # Focus leagues in priority order; globs allowed. Only in-season ones are fetched.
+    the_odds_api_sports: str = DEFAULT_ODDS_FOCUS
     the_odds_api_regions: str = "us"
+    # Free plan: 500 credits/month (re-checked 2026-10-02). The rest is left for manual use.
+    the_odds_api_monthly_budget: int = Field(default=450, ge=1)
+    the_odds_api_lookahead_hours: int = Field(default=36, ge=1)
+    odds_refresh_file: Path = Path("logs/odds-api-refresh.json")
+    # One API-Sports key serves every api-sports.io sport API (100 free requests/day each).
+    api_sports_key: str = ""
     collection_interval_hours: int = Field(default=6, ge=6)
     scheduler_health_file: Path = Path("logs/scheduler-health.json")
     provider_quota_file: Path = Path("logs/provider-quotas.json")

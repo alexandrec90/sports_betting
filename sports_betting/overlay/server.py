@@ -1,7 +1,9 @@
 """Loopback-only HTTP service the browser extension asks for verdicts.
 
 `POST /evaluate` takes a Mise-o-jeu+ odds response the page already loaded and returns a
-verdict per event. The body is parsed in memory and dropped: nothing is logged or written.
+verdict per event. The body is parsed in memory and dropped: no odds, teams or event IDs are
+logged or written. The one file it touches is the coverage report, which holds only counts
+per league (`sports_betting/overlay/coverage.py`).
 No CORS header is sent, so an ordinary web page cannot read the answer; the extension's
 service worker can, because its host permission covers this origin.
 """
@@ -17,9 +19,10 @@ from datetime import UTC, datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
+from sports_betting.overlay.coverage import CoverageTracker
 from sports_betting.overlay.evaluate import evaluate
 from sports_betting.overlay.lines import FairLine
-from sports_betting.overlay.offers import parse_offers
+from sports_betting.overlay.offers import parse_catalog, parse_offers
 
 HOST = "127.0.0.1"
 #: Mirrored by `SERVICE` in `extensions/mise-overlay/background.js` and the manifest's
@@ -75,12 +78,14 @@ class OverlayServer(ThreadingHTTPServer):
         *,
         lines: Callable[[], list[FairLine]],
         min_edge: float = DEFAULT_MIN_EDGE,
+        coverage: CoverageTracker | None = None,
     ):
         if address[0] != HOST:
             raise ValueError(f"the overlay service binds {HOST} only, not {address[0]!r}")
         super().__init__(address, OverlayHandler)
         self.lines = lines
         self.min_edge = min_edge
+        self.coverage = coverage
 
 
 class OverlayHandler(BaseHTTPRequestHandler):
@@ -123,12 +128,21 @@ class OverlayHandler(BaseHTTPRequestHandler):
             return
         lines = self.server.lines()
         verdicts = evaluate(parse_offers(payload), lines, min_edge=self.server.min_edge)
+        catalog = parse_catalog(payload)
+        priced = {verdict.event_id for verdict in verdicts if verdict.status == "matched"}
+        if self.server.coverage is not None:
+            self.server.coverage.record(catalog, priced)
         self._send(
             200,
             {
                 "ok": True,
                 "min_edge": self.server.min_edge,
                 **_summary(lines),
+                # IDs, not counts: the panel unions them across a page's overlapping requests.
+                "page": {
+                    "event_ids": sorted(entry.event_id for entry in catalog),
+                    "priced_ids": sorted(priced),
+                },
                 "events": [asdict(verdict) for verdict in verdicts],
             },
         )

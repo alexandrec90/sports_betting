@@ -131,8 +131,9 @@ Provider jobs and quota policy belong in `sports_betting`, never the sibling lak
 a passive private storage boundary. Keep the scheduler single-writer: concurrent Parquet/catalog
 writes to one `ARCHIVE_ROOT` are unsupported. Free-plan minimums are hard safety constraints:
 `COLLECTION_INTERVAL_HOURS >= 6`, BALLDONTLIE requests at least 13 seconds apart, football-data
-requests at least 7 seconds apart, and The Odds API claims against the persistent 20/day ledger
-before every request. Do not weaken these limits without re-checking current official pricing.
+requests at least 7 seconds apart, and every paid The Odds API request claims against the
+persistent monthly credit ledger (free plan 500/month, re-checked 2026-10-02; budget 450).
+Do not weaken these limits without re-checking current official pricing.
 Historical bulk downloads require no keys but may be large: keep backfills manual, pace requests
 at least one second apart, preserve publisher files/licences/hashes, and make scheduled weekly
 refresh opt-in. MoneyPuck data is non-commercial unless separate permission is obtained.

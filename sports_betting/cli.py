@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import time
 from collections.abc import Callable
 from dataclasses import asdict
 from datetime import UTC, date, datetime, timedelta
@@ -21,6 +22,9 @@ from sports_betting.historical import (
     BulkImportSummary,
     HistoricalImporters,
 )
+from sports_betting.overlay.coverage import DEFAULT_PATH as COVERAGE_PATH
+from sports_betting.overlay.coverage import CoverageTracker, coverage_lines, summarize
+from sports_betting.overlay.coverage import load as load_coverage
 from sports_betting.overlay.lines import load_fair_lines
 from sports_betting.overlay.server import DEFAULT_MIN_EDGE as OVERLAY_MIN_EDGE
 from sports_betting.overlay.server import DEFAULT_PORT as OVERLAY_PORT
@@ -28,10 +32,13 @@ from sports_betting.overlay.server import HOST as OVERLAY_HOST
 from sports_betting.overlay.server import CachedLines, OverlayServer
 from sports_betting.pipeline import ingest_events
 from sports_betting.providers import TheSportsDbClient
+from sports_betting.providers.api_sports import MIN_INTERVAL_SECONDS as API_SPORTS_INTERVAL
+from sports_betting.providers.api_sports import probe_football
 from sports_betting.scheduler import CollectionJobs, serve
 
 REPORT_PATH = Path("logs/ingest-events.json")
 ARCHIVE_REPORT_PATH = Path("logs/archive-ops.json")
+API_SPORTS_PROBE_PATH = Path("logs/api-sports-probe.json")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -57,16 +64,7 @@ def build_parser() -> argparse.ArgumentParser:
         default="all",
     )
     subparsers.add_parser("serve", help="run the persistent free-tier collection scheduler")
-    overlay = subparsers.add_parser(
-        "overlay-serve", help="serve fair-line verdicts to the Mise-o-jeu+ browser overlay"
-    )
-    overlay.add_argument("--port", type=int, default=OVERLAY_PORT)
-    overlay.add_argument(
-        "--min-edge",
-        type=float,
-        default=OVERLAY_MIN_EDGE,
-        help="smallest edge flagged as value, e.g. 0.03 for 3%%",
-    )
+    _add_overlay_parsers(subparsers)
     health = subparsers.add_parser("health", help="is collection actually pulling data?")
     health.add_argument(
         "--quiet", action="store_true", help="print only the problem jobs, not every job"
@@ -94,6 +92,29 @@ def build_parser() -> argparse.ArgumentParser:
         "archive-recatalog", help="rewrite _catalog manifests into the shared lake shape"
     )
     return parser
+
+
+def _add_overlay_parsers(subparsers: argparse._SubParsersAction) -> None:
+    """The Mise-o-jeu+ overlay's subcommands, and the API-Sports free-plan probe."""
+    overlay = subparsers.add_parser(
+        "overlay-serve", help="serve fair-line verdicts to the Mise-o-jeu+ browser overlay"
+    )
+    overlay.add_argument("--port", type=int, default=OVERLAY_PORT)
+    overlay.add_argument(
+        "--min-edge",
+        type=float,
+        default=OVERLAY_MIN_EDGE,
+        help="smallest edge flagged as value, e.g. 0.03 for 3%%",
+    )
+    subparsers.add_parser(
+        "overlay-coverage", help="which browsed Mise-o-jeu+ leagues the overlay could price"
+    )
+    probe = subparsers.add_parser(
+        "probe-api-sports", help="check what an API-Sports free key returns (3 requests)"
+    )
+    probe.add_argument(
+        "--date", type=date.fromisoformat, help="day to probe (default: tomorrow, UTC)"
+    )
 
 
 def _add_bulk_parsers(subparsers: argparse._SubParsersAction) -> None:
@@ -243,7 +264,12 @@ def _overlay_serve(args: argparse.Namespace) -> int:
         raise ValueError("--min-edge is a fraction between 0 and 1, e.g. 0.03")
     root = get_settings().archive_root
     lines = CachedLines(lambda: load_fair_lines(root))
-    server = OverlayServer((OVERLAY_HOST, args.port), lines=lines, min_edge=args.min_edge)
+    server = OverlayServer(
+        (OVERLAY_HOST, args.port),
+        lines=lines,
+        min_edge=args.min_edge,
+        coverage=CoverageTracker(COVERAGE_PATH),
+    )
     count = len(lines())
     sys.stdout.write(
         f"overlay: {count} upcoming fair line(s) from {root}; "
@@ -394,7 +420,35 @@ _COMMANDS: dict[str, Callable[[argparse.Namespace, Path], int]] = {
     "bulk-import": _bulk,
     "statsbomb-list": _bulk,
     "ingest-events": _ingest_events,
+    "overlay-coverage": lambda _args, _report_path: _overlay_coverage(),
+    "probe-api-sports": lambda args, _report_path: _probe_api_sports(args),
 }
+
+
+def _overlay_coverage() -> int:
+    sys.stdout.write("\n".join(coverage_lines(summarize(load_coverage(COVERAGE_PATH)))))
+    sys.stdout.write(f"\nartifact: {COVERAGE_PATH}\n")
+    return 0
+
+
+def _probe_api_sports(args: argparse.Namespace) -> int:
+    day = args.date or datetime.now(UTC).date() + timedelta(days=1)
+    result = probe_football(
+        get_settings().api_sports_key,
+        day,
+        pause=lambda: time.sleep(API_SPORTS_INTERVAL),
+    )
+    _write_report({"ok": result["verdict"] == "usable", **result}, API_SPORTS_PROBE_PATH)
+    odds = result["odds"]
+    sys.stdout.write(
+        f"api-sports {result['plan'] or 'unknown plan'}: verdict {result['verdict']}; "
+        f"{result['fixtures']['results']} fixtures and {odds['results']} with odds on "
+        f"{result['day']} ({odds['pages'] or 0} page(s))\n"
+    )
+    for error in result["status_errors"] + result["fixtures"]["errors"] + odds["errors"]:
+        sys.stdout.write(f"  {error}\n")
+    sys.stdout.write(f"artifact: {API_SPORTS_PROBE_PATH}\n")
+    return 0 if result["verdict"] == "usable" else 1
 
 
 def main(argv: list[str] | None = None) -> int:

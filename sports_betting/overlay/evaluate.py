@@ -61,7 +61,13 @@ class EventVerdict:
 
 
 def _probabilities(offer: Offer, line: FairLine) -> tuple[float, float] | None:
-    """(home, away) fair probability in the offer's orientation, or None if teams differ."""
+    """(home, away) fair probability in the offer's orientation, or None if they differ.
+
+    A three-way offer only matches a three-way line: a two-way price has no draw to judge,
+    and its probabilities would be inflated by the missing draw.
+    """
+    if (offer.draw_price is None) != (line.draw_prob is None):
+        return None
     if same_team(offer.home, line.home) and same_team(offer.away, line.away):
         return line.home_prob, line.away_prob
     if same_team(offer.home, line.away) and same_team(offer.away, line.home):
@@ -99,6 +105,10 @@ def evaluate(offers: list[Offer], lines: list[FairLine], *, min_edge: float) -> 
             )
             continue
         _, line, (home_prob, away_prob) = best
+        sides = [_side(offer.away, offer.away_price, away_prob, min_edge)]
+        if offer.draw_price is not None and line.draw_prob is not None:
+            sides.append(_side("Draw", offer.draw_price, line.draw_prob, min_edge))
+        sides.append(_side(offer.home, offer.home_price, home_prob, min_edge))
         verdicts.append(
             EventVerdict(
                 event_id=offer.event_id,
@@ -108,10 +118,7 @@ def evaluate(offers: list[Offer], lines: list[FairLine], *, min_edge: float) -> 
                 boosted=offer.boosted,
                 line_observed_at=line.observed_at,
                 books=line.books,
-                sides=(
-                    _side(offer.away, offer.away_price, away_prob, min_edge),
-                    _side(offer.home, offer.home_price, home_prob, min_edge),
-                ),
+                sides=tuple(sides),
             )
         )
     return verdicts

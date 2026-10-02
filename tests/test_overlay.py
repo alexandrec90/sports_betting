@@ -7,11 +7,11 @@ are invented. Real Mise-o-jeu+ data must never be committed (Conditions of Use Â
 
 from __future__ import annotations
 
+import http.client
 import json
 import re
 import threading
-import urllib.error
-import urllib.request
+import urllib.parse
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -20,16 +20,11 @@ import pytest
 
 from sports_betting import cli
 from sports_betting.archive.odds import OddsArchive
-from sports_betting.overlay import (
-    FairLine,
-    Offer,
-    evaluate,
-    fair_line_from_payload,
-    load_fair_lines,
-    parse_offers,
-    same_team,
-)
+from sports_betting.overlay.evaluate import EventVerdict, SideVerdict, evaluate, same_team
+from sports_betting.overlay.lines import FairLine, fair_line_from_payload, load_fair_lines
+from sports_betting.overlay.offers import Offer, parse_offers
 from sports_betting.overlay.server import DEFAULT_PORT, MAX_BODY_BYTES, CachedLines, OverlayServer
+from sports_betting.overlay.server import OverlayHandler
 from sports_betting.providers.odds_api import OddsSnapshot
 
 EXTENSION = Path(__file__).resolve().parents[1] / "extensions" / "mise-overlay"
@@ -291,6 +286,42 @@ def test_evaluate_flags_value_against_the_minimum_price():
     assert [side.value for side in strict.sides] == [False, True]
 
 
+def test_evaluate_returns_the_whole_verdict_for_a_matched_and_an_unmatched_offer():
+    unmatched = offer(event_id="2", home="New York Mets", boosted=True)
+    matched, missing = evaluate([offer(), unmatched], [line(home_prob=0.6)], min_edge=0.03)
+
+    assert matched == EventVerdict(
+        event_id="1",
+        name="Atlanta Braves at Los Angeles Dodgers",
+        start=START,
+        status="matched",
+        boosted=False,
+        line_observed_at=START - timedelta(hours=5),
+        books=3,
+        sides=(
+            SideVerdict(
+                team="Atlanta Braves",
+                price=2.60,
+                fair_prob=0.4,
+                fair_price=2.5,
+                min_price=2.575,
+                edge=0.04,
+                value=True,
+            ),
+            SideVerdict(
+                team="Los Angeles Dodgers",
+                price=1.80,
+                fair_prob=0.6,
+                fair_price=1.667,
+                min_price=1.717,
+                edge=0.08,
+                value=True,
+            ),
+        ),
+    )
+    assert missing == EventVerdict("2", unmatched.name, START, "no-line", boosted=True)
+
+
 def test_evaluate_handles_swapped_home_and_away():
     swapped = line(home="Atlanta Braves", away="Los Angeles Dodgers", home_prob=0.4)
     [verdict] = evaluate([offer()], [swapped], min_edge=0.0)
@@ -326,13 +357,21 @@ def service(tmp_path):
     server.server_close()
 
 
+def connect(url: str) -> tuple[http.client.HTTPConnection, str]:
+    """A connection to the loopback service and the request path. `http.client` speaks only
+    to the host it is given, so unlike `urlopen` there is no URL scheme to audit."""
+    parts = urllib.parse.urlsplit(url)
+    return http.client.HTTPConnection(parts.hostname or "", parts.port, timeout=5), parts.path
+
+
 def call(url: str, body: bytes | None = None) -> tuple[int, dict]:
-    request = urllib.request.Request(url, data=body, method="POST" if body is not None else "GET")  # noqa: S310 - loopback test server
+    connection, path = connect(url)
     try:
-        with urllib.request.urlopen(request, timeout=5) as response:  # noqa: S310 - loopback test server
-            return response.status, json.loads(response.read())
-    except urllib.error.HTTPError as error:
-        return error.code, json.loads(error.read())
+        connection.request("POST" if body is not None else "GET", path, body=body)
+        response = connection.getresponse()
+        return response.status, json.loads(response.read())
+    finally:
+        connection.close()
 
 
 def test_service_health_reports_the_loaded_lines(service):
@@ -356,29 +395,46 @@ def test_service_evaluates_a_page_response_and_stores_nothing(service):
     assert sorted(path.relative_to(archive) for path in archive.rglob("*")) == before
 
 
+def test_the_handler_echoes_no_request_line_to_the_terminal(service, capfd):
+    """`OverlayHandler.log_message` is silent: http.server's default writes every request
+    line to stderr, which would echo page data."""
+    base, _ = service
+    capfd.readouterr()
+    assert call(f"{base}/health")[0] == 200
+    assert call(f"{base}/nope")[0] == 404
+    assert capfd.readouterr().err == ""
+    with OverlayServer(("127.0.0.1", 0), lines=list) as server:
+        assert server.RequestHandlerClass is OverlayHandler
+
+
 def test_service_rejects_bad_requests(service):
     base, _ = service
     assert call(f"{base}/evaluate", b"{not json")[0] == 400
-    assert call(f"{base}/nope", b"{}")[0] == 404
+    # An empty body: the 404 is sent unread, and unread bytes would reset the connection.
+    assert call(f"{base}/nope", b"")[0] == 404
     assert call(f"{base}/nope")[0] == 404
 
 
 def test_service_rejects_an_oversized_body(service):
+    """Headers only. The server answers without reading a body it refuses, and closing on
+    unread bytes resets the connection, which on Windows can drop the 413 before it is read."""
     base, _ = service
-    request = urllib.request.Request(  # noqa: S310 - loopback test server
-        f"{base}/evaluate",
-        data=b"{}",
-        method="POST",
-        headers={"Content-Length": str(MAX_BODY_BYTES + 1)},
-    )
-    with pytest.raises(urllib.error.HTTPError) as error:
-        urllib.request.urlopen(request, timeout=5)  # noqa: S310 - loopback test server
-    assert error.value.code == 413
+    connection, path = connect(f"{base}/evaluate")
+    try:
+        connection.putrequest("POST", path)
+        connection.putheader("Content-Length", str(MAX_BODY_BYTES + 1))
+        connection.endheaders()
+        assert connection.getresponse().status == 413
+    finally:
+        connection.close()
 
 
-def test_service_refuses_to_bind_beyond_loopback():
+# `""` binds every interface, as `0.0.0.0` does; a LAN address, and a name that only
+# usually resolves to loopback, are refused alike.
+@pytest.mark.parametrize("host", ["", "localhost", "192.168.1.10"])
+def test_service_refuses_to_bind_beyond_loopback(host):
     with pytest.raises(ValueError, match=r"127\.0\.0\.1"):
-        OverlayServer(("0.0.0.0", 0), lines=list)  # noqa: S104 - asserting the refusal
+        OverlayServer((host, 0), lines=list)
 
 
 def test_cached_lines_reload_only_after_the_ttl():

@@ -16,7 +16,6 @@
 #
 # Regenerate only when adopting the gate: python scripts/hooks/structure_check.py --seed
 complexity::scripts/lint-all.py::main = 18
-complexity::sports_betting/cli.py::main = 19
 complexity::sports_betting/historical.py::download = 17
 dependency::pyproject.toml::apscheduler = 1
 dependency::pyproject.toml::boto3 = 1
@@ -34,7 +33,6 @@ dependency::pyproject.toml::ruff = 1
 dependency::pyproject.toml::sqlalchemy = 1
 dependency::pyproject.toml::types-openpyxl = 1
 function_lines::scripts/lint-all.py::main = 91
-function_lines::sports_betting/cli.py::main = 115
 function_params::sports_betting/archive/bulk.py::write = 11
 function_params::sports_betting/archive/manifest.py::build_manifest = 7
 function_params::sports_betting/providers/thesportsdb.py::from_values = 18

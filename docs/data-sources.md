@@ -34,12 +34,23 @@ depending on a provider, and preserve the provider name and raw response snapsho
    (not a header), and `regions` is required — see `THE_ODDS_API_REGIONS`.
    Sources: <https://the-odds-api.com/#get-access> and
    <https://the-odds-api.com/liveapi/guides/v4/>
-5. **API-Sports / API-Football (probe only):** 100 free requests a day *per sport API* with
-   one key, every endpoint, including a pre-match odds feed updated daily. Free plans are
-   limited to certain seasons, so whether current-season odds are readable is unknown until
-   `sports-betting probe-api-sports` runs with a key. It is the largest possible free odds
-   source (about 1,100 soccer leagues, plus hockey, basketball and others); build its
-   collector only if the probe's verdict is `usable`.
+5. **API-Sports / API-Football (implemented and scheduled for soccer):** 100 free requests a
+   day *per sport API* with one key. What the free plan actually allows, found live on
+   2026-10-03 (the probe's `usable` verdict only read page 1, so it missed the first two):
+   - `/odds?date=` reads current-season odds but refuses `page` above 3: 30 games a query,
+     out of ~380 priced on a Sunday.
+   - `/odds?league=&season=` is refused for the current season ("try from 2022 to 2024").
+   - `/odds?fixture=` reads one current-season game, all nine books including Pinnacle.
+   - `/fixtures?date=` returns every game of the day (~800) in one request.
+   - Some leagues carry no odds on any plan (`coverage.odds` false): the Champions League,
+     Europa League, Portugal, Turkey, Belgium, Serie B, 2. Bundesliga, Ligue 2 and others.
+     The Odds API's focus list covers the Champions League instead.
+
+   So the job spends, per day: one fixtures call, three date pages (30 games), then one call
+   per not-yet-started game in `API_SPORTS_LEAGUES` (priority order, kick-off order within a
+   league) until the 90/day ledger budget is spent. Today is collected before tomorrow. Bet
+   id 1 is Match Winner (confirmed live). Hockey, basketball and the other sport APIs have
+   their own 100/day each and are not yet probed.
    Source: <https://www.api-football.com/news/post/how-to-get-started-with-api-football-the-complete-beginners-guide>
 6. **ClubElo (not implemented):** <http://clubelo.com/API> publishes free win/draw/loss
    probabilities for upcoming European and South American club matches, lower divisions
@@ -132,6 +143,12 @@ wants which sports. Jobs are single-writer and run every six hours:
   Stalest league first, at most an even share of the credits left this month
   (`sports_betting/odds_plan.py`). The provider's own `x-requests-remaining` also stops the
   job 25 credits short of zero. Last-refresh times live in `logs/odds-api-refresh.json`.
+- API-Sports football: today then tomorrow (`API_SPORTS_DAYS`), each once per UTC day, at
+  least 7 seconds apart (free plan: 10/min), claiming the persistent daily ledger
+  (`API_SPORTS_DAILY_BUDGET`, default 90 of 100) before every request. Odds are written as
+  they arrive, so a budget that runs out mid-day keeps what it collected; that day stays due,
+  and running out is reported in the job's detail rather than as a failure. Refresh times
+  live in `logs/api-sports-refresh.json`.
 
 ## Why Betfair is not the execution target
 
@@ -209,7 +226,9 @@ The page's sportsbook routes `fetch` through an XHR polyfill that requests a `bl
 the extension does. If the overlay stops seeing odds after a site update, check those two
 things first.
 
-The proof of concept's fair line is the margin-free consensus of the The Odds API snapshots
+The proof of concept's fair line comes from the archived snapshots of both odds sources
 (`sports_betting/overlay/lines.py`): two-way moneylines, and three-way win/draw/loss for soccer
-(Mise-o-jeu+'s `MR` market). It covers only the focus leagues the Odds API job collects.
-Replace it with model probabilities once a model exists.
+(Mise-o-jeu+'s `MR` market). Each book's margin is removed. When Pinnacle prices the game its
+line is used alone (the panel says "Pinnacle"); otherwise the books are averaged. When both
+sources price the same game, the Pinnacle line wins, then the newer one. Replace it with
+model probabilities once a model exists.

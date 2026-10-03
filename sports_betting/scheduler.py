@@ -18,6 +18,14 @@ from sports_betting.providers import (
     OddsApiClient,
     TheSportsDbClient,
 )
+from sports_betting.providers.api_sports import MIN_INTERVAL_SECONDS as API_SPORTS_INTERVAL
+from sports_betting.providers.api_sports import (
+    ApiSportsFootballClient,
+    DayPlan,
+    collect_football_day,
+)
+from sports_betting.providers.odds_api import OddsSnapshot
+from sports_betting.providers.thesportsdb import SportsDataProviderError
 from sports_betting.odds_plan import (
     RefreshLog,
     expand_focus,
@@ -57,6 +65,87 @@ def _partial_outcome(fetched: int, added: int, failures: list[str]) -> JobOutcom
     return JobOutcome(status, fetched, added, detail="; ".join(failures))
 
 
+class ApiSportsOddsJob:
+    """Soccer pre-match odds from API-Sports: each day's odds once per UTC day, today first.
+
+    One fixtures call plus ~40 odds pages per day collected, under the persistent daily
+    budget. Pages already written survive a budget that runs out mid-day; that day stays
+    due and is retried on the next run.
+    """
+
+    def __init__(self, settings: Settings, odds: OddsArchive, ledger: QuotaLedger):
+        self.settings = settings
+        self.odds = odds
+        self.refresh = RefreshLog(settings.api_sports_refresh_file)
+        self.gate = ProviderThrottle(
+            "api-sports-football",
+            min_interval_seconds=API_SPORTS_INTERVAL,
+            budget=QuotaBudget(ledger, daily_limit=settings.api_sports_daily_budget),
+        )
+
+    def days_due(self, now: datetime) -> list[date]:
+        """Days to collect this run: today onward, each at most once per UTC day."""
+        refreshed = self.refresh.load()
+        today = now.astimezone(UTC).date()
+        days = [today + timedelta(days=offset) for offset in range(self.settings.api_sports_days)]
+        return [
+            day
+            for day in days
+            if (last := refreshed.get(f"football:{day.isoformat()}")) is None
+            or last.astimezone(UTC).date() != today
+        ]
+
+    def _mark_done(self, day: date, moment: datetime) -> None:
+        refreshed = self.refresh.load()
+        refreshed[f"football:{day.isoformat()}"] = moment
+        self.refresh.save(refreshed)
+
+    def plan(self) -> DayPlan:
+        return DayPlan(
+            bet=self.settings.api_sports_bet,
+            max_pages=self.settings.api_sports_max_pages,
+            leagues=tuple(
+                int(league) for league in self.settings.csv(self.settings.api_sports_leagues)
+            ),
+        )
+
+    def collect(self, moment: datetime) -> JobOutcome:
+        totals = {"fetched": 0, "added": 0}
+
+        def write(snapshots: list[OddsSnapshot]) -> None:
+            totals["fetched"] += len(snapshots)
+            totals["added"] += self.odds.write(snapshots).snapshots_added
+
+        done: list[str] = []
+        failures: list[str] = []
+        stopped = ""
+        plan = self.plan()
+        with ApiSportsFootballClient(
+            self.settings.api_sports_key,
+            before_request=self.gate,
+            timeout_seconds=self.settings.sportsdb_timeout_seconds,
+        ) as client:
+            for day in self.days_due(moment):
+                try:
+                    collect_football_day(client, day, observed_at=moment, write=write, plan=plan)
+                except DailyQuotaExceededError:
+                    # Expected on a busy day: what was written stays, the day stays due.
+                    stopped = f"; daily budget spent during {day}"
+                    break
+                except SportsDataProviderError as exc:
+                    failures.append(f"{day}: {exc}")
+                    continue
+                done.append(day.isoformat())
+                self._mark_done(day, moment)
+            remaining = client.remaining
+        outcome = _partial_outcome(totals["fetched"], totals["added"], failures)
+        summary = (
+            f"days {', '.join(done) or 'none due'}{stopped}; provider requests left {remaining}"
+        )
+        detail = f"{summary}; {outcome.detail}" if outcome.detail else summary
+        return JobOutcome(outcome.status, outcome.fetched, outcome.added, detail)
+
+
 class CollectionJobs:
     """Provider jobs. The scheduler serializes calls so catalog writes never race."""
 
@@ -84,6 +173,7 @@ class CollectionJobs:
         )
         # `/sports` and `/events` cost no credits; they are only paced.
         self.odds_free_gate = ProviderThrottle("the-odds-api-free", min_interval_seconds=2)
+        self.api_sports_job = ApiSportsOddsJob(settings, self.odds, ledger)
         self.bulk_gate = ProviderThrottle(
             "historical-bulk",
             min_interval_seconds=settings.bulk_request_interval_seconds,
@@ -233,6 +323,13 @@ class CollectionJobs:
 
         return self._run("the-odds-api", collect)
 
+    def api_sports(self, now: datetime | None = None) -> JobOutcome:
+        if not self.settings.api_sports_key:
+            return self._finish("api-sports", JobOutcome("skipped", detail="API key not set"))
+        return self._run(
+            "api-sports", lambda: self.api_sports_job.collect(now or datetime.now(UTC))
+        )
+
     def historical_bulk(self, today: date | None = None) -> JobOutcome:
         if not self.settings.bulk_refresh_enabled:
             return self._finish(
@@ -285,6 +382,7 @@ class CollectionJobs:
             "thesportsdb": self.thesportsdb(),
             "balldontlie": self.balldontlie(),
             "the-odds-api": self.the_odds_api(),
+            "api-sports": self.api_sports(),
         }
         if self.settings.bulk_refresh_enabled:
             outcomes["historical-bulk"] = self.historical_bulk()
@@ -322,6 +420,7 @@ def build_scheduler(settings: Settings | None = None) -> BlockingScheduler:
         ("thesportsdb", 10, jobs.thesportsdb),
         ("balldontlie", 20, jobs.balldontlie),
         ("the-odds-api", 30, jobs.the_odds_api),
+        ("api-sports", 40, jobs.api_sports),
     ):
         scheduler.add_job(
             function,

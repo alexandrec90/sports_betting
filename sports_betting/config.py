@@ -25,6 +25,9 @@ DEFAULT_ODDS_FOCUS = (
     "soccer_italy_serie_a,soccer_germany_bundesliga,soccer_france_ligue_one,soccer_usa_mls,"
     "tennis_atp_*,tennis_wta_*"
 )
+DEFAULT_API_SPORTS_LEAGUES = (
+    "39,140,135,78,61,253,479,262,40,88,179,71,128,141,41,42,218,197,239,265,292"
+)
 
 
 class Settings(BaseSettings):
@@ -70,6 +73,22 @@ class Settings(BaseSettings):
     odds_refresh_file: Path = Path("logs/odds-api-refresh.json")
     # One API-Sports key serves every api-sports.io sport API (100 free requests/day each).
     api_sports_key: str = ""
+    # Football odds per day collected: one fixtures call, up to `api_sports_max_pages` date
+    # pages (10 games each), then one call per game in `api_sports_leagues`. The free plan
+    # allows 100 requests a day; the rest is left for the probe and manual checks.
+    api_sports_daily_budget: int = Field(default=90, ge=1)
+    # Free plans refuse page 4 and above (found live 2026-10-03).
+    api_sports_max_pages: int = Field(default=3, ge=1)
+    # API-Sports league ids, most important first; only leagues whose current season has
+    # odds coverage (checked 2026-10-03). EPL, La Liga, Serie A, Bundesliga, Ligue 1, MLS,
+    # CPL, Liga MX, Championship, Eredivisie, Scotland, Brazil, Argentina, Segunda, League
+    # One/Two, Austria, Greece, Colombia, Chile, K League 1.
+    api_sports_leagues: str = DEFAULT_API_SPORTS_LEAGUES
+    # Days collected each UTC day, starting today: 2 means today and tomorrow.
+    api_sports_days: int = Field(default=2, ge=1, le=7)
+    # Bet id to request; 1 is Match Winner (checked live 2026-10-03). Blank keeps every bet.
+    api_sports_bet: str = "1"
+    api_sports_refresh_file: Path = Path("logs/api-sports-refresh.json")
     collection_interval_hours: int = Field(default=6, ge=6)
     scheduler_health_file: Path = Path("logs/scheduler-health.json")
     provider_quota_file: Path = Path("logs/provider-quotas.json")

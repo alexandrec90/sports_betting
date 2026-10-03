@@ -58,6 +58,8 @@ class EventVerdict:
     line_observed_at: datetime | None = None
     books: int = 0
     sides: tuple[SideVerdict, ...] = field(default_factory=tuple)
+    #: The fair line is Pinnacle's own price, not an average of softer books.
+    sharp: bool = False
 
 
 def _probabilities(offer: Offer, line: FairLine) -> tuple[float, float] | None:
@@ -88,23 +90,37 @@ def _side(team: str, price: float, fair_prob: float, min_edge: float) -> SideVer
     )
 
 
+def best_line(offer: Offer, lines: list[FairLine]) -> tuple[FairLine, tuple[float, float]] | None:
+    """The matching line nearest in start time; ties go to Pinnacle's, then the newest.
+
+    Two sources can price the same game (The Odds API and API-Sports for soccer), so a tie
+    on the clock is normal rather than a doubleheader.
+    """
+    candidates = []
+    for line in lines:
+        gap = abs(line.start - offer.start)
+        if gap > MATCH_WINDOW:
+            continue
+        probabilities = _probabilities(offer, line)
+        if probabilities is not None:
+            rank = (gap, not line.sharp, -line.observed_at.timestamp())
+            candidates.append((rank, line, probabilities))
+    if not candidates:
+        return None
+    _, line, probabilities = min(candidates, key=lambda candidate: candidate[0])
+    return line, probabilities
+
+
 def evaluate(offers: list[Offer], lines: list[FairLine], *, min_edge: float) -> list[EventVerdict]:
     verdicts = []
     for offer in offers:
-        best: tuple[timedelta, FairLine, tuple[float, float]] | None = None
-        for line in lines:
-            gap = abs(line.start - offer.start)
-            if gap > MATCH_WINDOW:
-                continue
-            probabilities = _probabilities(offer, line)
-            if probabilities is not None and (best is None or gap < best[0]):
-                best = (gap, line, probabilities)
+        best = best_line(offer, lines)
         if best is None:
             verdicts.append(
                 EventVerdict(offer.event_id, offer.name, offer.start, "no-line", offer.boosted)
             )
             continue
-        _, line, (home_prob, away_prob) = best
+        line, (home_prob, away_prob) = best
         sides = [_side(offer.away, offer.away_price, away_prob, min_edge)]
         if offer.draw_price is not None and line.draw_prob is not None:
             sides.append(_side("Draw", offer.draw_price, line.draw_prob, min_edge))
@@ -119,6 +135,7 @@ def evaluate(offers: list[Offer], lines: list[FairLine], *, min_edge: float) -> 
                 line_observed_at=line.observed_at,
                 books=line.books,
                 sides=tuple(sides),
+                sharp=line.sharp,
             )
         )
     return verdicts

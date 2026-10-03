@@ -86,7 +86,8 @@
     for (const event of matched) {
       const row = element("div", "event");
       row.append(element("div", "name", event.name + (event.boosted ? " (boosted)" : "")));
-      row.append(element("div", "when", `${time(event.start)} · ${event.books} book(s)`));
+      const source = event.sharp ? "Pinnacle" : `${event.books} book(s)`;
+      row.append(element("div", "when", `${time(event.start)} · ${source}`));
       for (const side of event.sides) {
         const line = element("div", "side");
         line.append(element("span", "", side.team));

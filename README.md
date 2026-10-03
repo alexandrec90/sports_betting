@@ -110,8 +110,17 @@ when it has a game in the next 36 hours, and the month's budget is spread evenly
 remaining runs. If the overlay-coverage report shows a league you bet on going unpriced, add
 it to the list.
 
-`uv run sports-betting probe-api-sports` checks whether an API-Sports free key (set
-`API_SPORTS_KEY`) can read current-season odds, which would widen coverage a lot.
+Soccer goes further with `API_SPORTS_KEY` set. The `api-sports` job collects pre-match odds,
+Pinnacle included, once per UTC day for today and tomorrow. The free plan reads 30 games per
+date query and refuses league queries for the current season, so the job takes those 30 and
+then asks game by game for the leagues in `API_SPORTS_LEAGUES` (EPL, La Liga, Serie A,
+Bundesliga, Ligue 1, MLS, CPL, Liga MX, … in priority order) until its 90 daily requests are
+spent:
+
+```bash
+uv run sports-betting collect --provider api-sports    # up to 90 requests, ~10 minutes
+uv run sports-betting probe-api-sports                 # 3 requests: what the key can read
+```
 
 ## Historical bulk imports
 

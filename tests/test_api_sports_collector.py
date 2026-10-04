@@ -268,8 +268,10 @@ def test_job_collects_today_then_tomorrow_once_per_utc_day(monkeypatch, tmp_path
     dates = [r.url.params["date"] for r in api.requests if r.url.path == "/fixtures"]
     assert dates == ["2026-10-03", "2026-10-04"]
 
+    assert outcome.due
     later, _ = run_job(monkeypatch, tmp_path, api, now=NOW + timedelta(hours=6))
     assert later.detail.startswith("days none due")
+    assert not later.due  # so the health store does not read it as an idle provider
     assert len(api.requests) == 6
 
     tomorrow = NOW + timedelta(days=1)

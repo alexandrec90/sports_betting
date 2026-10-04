@@ -22,10 +22,18 @@ from sports_betting import cli
 from sports_betting.archive.odds import OddsArchive
 from sports_betting.overlay.coverage import CoverageTracker, coverage_lines, summarize
 from sports_betting.overlay.coverage import load as load_coverage
-from sports_betting.overlay.evaluate import EventVerdict, SideVerdict, evaluate, same_team
+from sports_betting.overlay.evaluate import (
+    EventVerdict,
+    SideVerdict,
+    best_line,
+    evaluate,
+    same_team,
+)
 from sports_betting.overlay.lines import (
     FairLine,
+    chosen_books,
     consensus_probabilities,
+    fair_line_from_api_sports,
     fair_line_from_payload,
     load_fair_lines,
 )
@@ -267,13 +275,34 @@ def test_consensus_probabilities_counts_the_books_it_averaged():
     home, away = "Los Angeles Dodgers", "Atlanta Braves"
     books = odds_payload((1.5, 2.5), (2.0, 2.0))["bookmakers"]
     assert consensus_probabilities([*books, "not a book"], home, away) == pytest.approx(
-        ((0.625 + 0.5) / 2, (0.375 + 0.5) / 2, None, 2)
+        ((0.625 + 0.5) / 2, (0.375 + 0.5) / 2, None, 2, False)
     )
-    home_prob, away_prob, draw_prob, count = consensus_probabilities(
+    home_prob, away_prob, draw_prob, count, sharp = consensus_probabilities(
         [*books, draw_book(2.0, 3.0, 4.0), draw_book(2.0, 3.0, 4.0)], home, away
     )
     assert (home_prob, away_prob, draw_prob, count) == pytest.approx((6 / 13, 4 / 13, 3 / 13, 2))
+    assert sharp is False
     assert consensus_probabilities([], home, away) is None
+
+
+def test_chosen_books_keeps_the_three_way_shape_then_prefers_pinnacle():
+    home, away = "Los Angeles Dodgers", "Atlanta Braves"
+    two_way = odds_payload((1.9, 1.9))["bookmakers"]
+    pinnacle = {**draw_book(2.0, 3.0, 4.0), "key": "pinnacle"}
+    books, sharp = chosen_books([*two_way, draw_book(2.0, 3.0, 4.0), pinnacle], home, away)
+    assert (len(books), sharp) == (1, True)
+    assert books[0] == pytest.approx((6 / 13, 4 / 13, 3 / 13))
+    assert chosen_books([], home, away) == ([], False)
+
+
+def test_consensus_uses_pinnacle_alone_when_it_prices_the_game():
+    home, away = "Los Angeles Dodgers", "Atlanta Braves"
+    books = odds_payload((1.5, 2.5), (2.0, 2.0))["bookmakers"]
+    books[1]["key"] = "pinnacle"
+    assert consensus_probabilities(books, home, away) == pytest.approx((0.5, 0.5, None, 1, True))
+    # A two-way Pinnacle price never displaces a three-way consensus.
+    soccer = [*books, draw_book(2.0, 3.0, 4.0)]
+    assert consensus_probabilities(soccer, home, away)[3:] == (1, False)
 
 
 def snapshot(payload: dict, observed_at: datetime) -> OddsSnapshot:
@@ -296,6 +325,91 @@ def test_load_fair_lines_keeps_the_newest_snapshot_of_upcoming_events(tmp_path):
 
     assert (fair.external_id, fair.observed_at, fair.home_prob) == ("odds-1", late, 0.5)
     assert load_fair_lines(tmp_path, now=START + timedelta(minutes=1)) == []
+
+
+def api_sports_payload(*books: tuple[str, str, str, str]) -> dict:
+    """An API-Sports snapshot payload: (bookmaker, home, draw, away) decimal strings."""
+    return {
+        "fixture": {
+            "fixture": {"id": 77, "date": START.isoformat()},
+            "teams": {"home": {"name": "Arsenal"}, "away": {"name": "Leeds"}},
+            "league": {"name": "Premier League", "country": "England"},
+        },
+        "odds": {
+            "fixture": {"id": 77},
+            "bookmakers": [
+                {
+                    "name": name,
+                    "bets": [
+                        {"id": 2, "name": "Goals Over/Under", "values": []},
+                        {
+                            "id": 1,
+                            "name": "Match Winner",
+                            "values": [
+                                {"value": "Home", "odd": home},
+                                {"value": "Draw", "odd": draw},
+                                {"value": "Away", "odd": away},
+                            ],
+                        },
+                    ],
+                }
+                for name, home, draw, away in books
+            ],
+        },
+    }
+
+
+def test_fair_line_from_api_sports_prefers_pinnacle():
+    payload = api_sports_payload(("Bet365", "1.5", "4.0", "6.0"), ("Pinnacle", "2.0", "3.0", "4.0"))
+    fair = fair_line_from_api_sports(payload, sport="Soccer", league="EPL", observed_at=START)
+
+    assert fair is not None
+    assert (fair.external_id, fair.home, fair.away, fair.sharp, fair.books) == (
+        "football:77",
+        "Arsenal",
+        "Leeds",
+        True,
+        1,
+    )
+    assert (fair.home_prob, fair.draw_prob, fair.away_prob) == pytest.approx(
+        (6 / 13, 4 / 13, 3 / 13)
+    )
+
+
+def test_fair_line_from_api_sports_needs_teams_and_a_usable_price():
+    broken = api_sports_payload(("Bet365", "1.5", "x", "6.0"))
+    assert fair_line_from_api_sports(broken, sport="Soccer", league=None, observed_at=START) is None
+    nameless = api_sports_payload(("Bet365", "1.5", "4.0", "6.0"))
+    nameless["fixture"]["teams"] = {}
+    assert (
+        fair_line_from_api_sports(nameless, sport="Soccer", league=None, observed_at=START) is None
+    )
+
+
+def test_load_fair_lines_reads_both_sources(tmp_path):
+    payload = api_sports_payload(("Pinnacle", "2.0", "3.0", "4.0"))
+    soccer = OddsSnapshot(
+        source="api-sports",
+        external_id="football:77",
+        payload_hash="h",
+        observed_at=START - timedelta(hours=6),
+        event_ts=START,
+        sport="Soccer",
+        league_name="England / Premier League",
+        event_name="Arsenal vs Leeds",
+        home_team="Arsenal",
+        away_team="Leeds",
+        market="1x2",
+        payload_json=json.dumps(payload),
+    )
+    OddsArchive(tmp_path).write([soccer, snapshot(odds_payload((1.9, 1.9)), START)])
+
+    lines = load_fair_lines(tmp_path, now=START - timedelta(hours=1))
+
+    assert sorted((line.external_id, line.sharp) for line in lines) == [
+        ("football:77", True),
+        ("odds-1", False),
+    ]
 
 
 def test_load_fair_lines_on_an_empty_archive_is_empty(tmp_path):
@@ -426,6 +540,18 @@ def test_evaluate_never_compares_two_way_and_three_way_prices():
     )
     [verdict] = evaluate([two_way_offer], [three_way_line], min_edge=0.0)
     assert verdict.status == "no-line"
+
+
+def test_best_line_breaks_a_tie_for_pinnacle_then_the_newest():
+    soft = line(home_prob=0.55, external_id="soft")
+    sharp = FairLine(**{**vars(line(home_prob=0.6, external_id="sharp")), "sharp": True})
+    newer = FairLine(**{**vars(line(home_prob=0.5, external_id="newer")), "observed_at": START})
+
+    assert best_line(offer(), [soft, sharp, newer])[0].external_id == "sharp"
+    assert best_line(offer(), [soft, newer])[0].external_id == "newer"
+    assert best_line(offer(), []) is None
+    [verdict] = evaluate([offer()], [soft, sharp], min_edge=0.0)
+    assert verdict.sharp is True
 
 
 def test_evaluate_picks_the_nearest_game_of_a_doubleheader():

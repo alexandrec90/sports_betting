@@ -59,6 +59,7 @@ def build_parser() -> argparse.ArgumentParser:
             "thesportsdb",
             "balldontlie",
             "the-odds-api",
+            "api-sports",
             "historical-bulk",
         ),
         default="all",
@@ -348,6 +349,7 @@ def _collect(args: argparse.Namespace, _report_path: Path) -> int:
         "thesportsdb": jobs.thesportsdb,
         "balldontlie": jobs.balldontlie,
         "the-odds-api": jobs.the_odds_api,
+        "api-sports": jobs.api_sports,
         "historical-bulk": jobs.historical_bulk,
     }
     outcomes = (

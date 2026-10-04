@@ -51,6 +51,7 @@ def test_scheduler_registers_all_jobs_at_safe_interval(tmp_path):
         "thesportsdb",
         "balldontlie",
         "the-odds-api",
+        "api-sports",
     }
     assert {job.trigger.interval.total_seconds() for job in scheduler.get_jobs()} == {21600}
 

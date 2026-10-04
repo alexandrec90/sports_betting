@@ -42,6 +42,7 @@ CONTAINER_PATHS = {
     "scheduler_health_file",
     "provider_quota_file",
     "odds_refresh_file",
+    "api_sports_refresh_file",
 }
 
 PASSTHROUGH = re.compile(r"^\$\{(?P<name>[A-Z_]+):-(?P<default>.*)\}$")

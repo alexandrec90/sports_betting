@@ -133,6 +133,8 @@ writes to one `ARCHIVE_ROOT` are unsupported. Free-plan minimums are hard safety
 `COLLECTION_INTERVAL_HOURS >= 6`, BALLDONTLIE requests at least 13 seconds apart, football-data
 requests at least 7 seconds apart, and every paid The Odds API request claims against the
 persistent monthly credit ledger (free plan 500/month, re-checked 2026-10-02; budget 450).
+API-Sports requests are at least 7 seconds apart and claim a persistent 90/day ledger (free
+plan 100/day per sport API).
 Do not weaken these limits without re-checking current official pricing.
 Historical bulk downloads require no keys but may be large: keep backfills manual, pace requests
 at least one second apart, preserve publisher files/licences/hashes, and make scheduled weekly

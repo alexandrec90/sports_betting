@@ -51,6 +51,10 @@ class JobOutcome:
     fetched: int = 0
     added: int = 0
     detail: str = ""
+    # False when the job had nothing to ask its provider, as API-Sports between its
+    # once-per-UTC-day collections: such a run says nothing about whether the provider
+    # still delivers, so the health store does not count it as a writeless success.
+    due: bool = True
 
 
 def _partial_outcome(fetched: int, added: int, failures: list[str]) -> JobOutcome:
@@ -120,12 +124,13 @@ class ApiSportsOddsJob:
         failures: list[str] = []
         stopped = ""
         plan = self.plan()
+        due = self.days_due(moment)
         with ApiSportsFootballClient(
             self.settings.api_sports_key,
             before_request=self.gate,
             timeout_seconds=self.settings.sportsdb_timeout_seconds,
         ) as client:
-            for day in self.days_due(moment):
+            for day in due:
                 try:
                     collect_football_day(client, day, observed_at=moment, write=write, plan=plan)
                 except DailyQuotaExceededError:
@@ -143,7 +148,7 @@ class ApiSportsOddsJob:
             f"days {', '.join(done) or 'none due'}{stopped}; provider requests left {remaining}"
         )
         detail = f"{summary}; {outcome.detail}" if outcome.detail else summary
-        return JobOutcome(outcome.status, outcome.fetched, outcome.added, detail)
+        return JobOutcome(outcome.status, outcome.fetched, outcome.added, detail, due=bool(due))
 
 
 class CollectionJobs:

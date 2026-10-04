@@ -141,7 +141,8 @@ class HealthStore:
             if outcome.added > 0:
                 entry["last_wrote"] = stamp
                 entry["writeless_successes"] = 0
-            else:
+            elif outcome.due:
+                # A run with nothing due neither counts nor resets: it asked nothing.
                 entry["writeless_successes"] += 1
             self._write_locked()
 

@@ -118,6 +118,21 @@ def test_repeated_successes_that_write_nothing_read_as_idle(tmp_path):
     assert status_for(_entry(store)) == "ok"
 
 
+def test_a_run_with_nothing_due_is_not_a_writeless_success(tmp_path):
+    """API-Sports collects each day once but runs every six hours, so three runs in four
+    ask nothing of the provider; counting those read the job "idle" every afternoon."""
+    store = _store(tmp_path)
+    store.record("collector", JobOutcome("ok", fetched=5, added=0))
+
+    for _ in range(IDLE_RUN_THRESHOLD):
+        store.record("collector", JobOutcome("ok", detail="days none due", due=False))
+
+    entry = _entry(store)
+    assert entry["writeless_successes"] == 1  # neither counted nor reset
+    assert entry["last_success"] is not None  # still ran, so never stale for it
+    assert status_for(entry) == "ok"
+
+
 def test_failing_outranks_stale_because_it_is_the_actionable_fact(tmp_path):
     store = _store(tmp_path)
     store.record_schedule("collector", 60)

@@ -83,8 +83,8 @@ class FakeApiSports:
         ids = [row["fixture"]["id"] for row in self.fixtures]
         rows = [odds_row(i) for i in ids[(page - 1) * 2 : page * 2]]
         paging = {"current": page, "total": max(1, (len(ids) + 1) // 2)}
-        body = {"errors": [], "paging": paging, "response": rows}
-        return httpx.Response(200, json=body, headers=headers)
+        paged: dict[str, Any] = {"errors": [], "paging": paging, "response": rows}
+        return httpx.Response(200, json=paged, headers=headers)
 
     def client(self, key: str = "secret", **kwargs: Any) -> ApiSportsFootballClient:
         transport = httpx.Client(transport=httpx.MockTransport(self))

@@ -12,6 +12,9 @@ from sports_betting.providers.thesportsdb import EventSnapshot, SportsDataProvid
 
 BASE_URL = "https://api.football-data.org/v4"
 
+#: The free plan answers a `dateFrom`/`dateTo` range of at most this many days.
+MAX_RANGE_DAYS = 10
+
 
 def _mapping(value: Any) -> dict[str, Any]:
     return value if isinstance(value, dict) else {}
@@ -63,7 +66,7 @@ def _parse_match(item: dict[str, Any], observed_at: datetime) -> EventSnapshot:
 
 
 class FootballDataClient:
-    """Fetch all free-plan matches for one UTC date in one request."""
+    """Fetch all free-plan matches for one UTC date, or a short range, in one request."""
 
     def __init__(
         self,
@@ -102,6 +105,21 @@ class FootballDataClient:
         params = {"date": day.isoformat()}
         if league:
             params["competitions"] = league.strip()
+        return self._matches(params, observed_at)
+
+    def fetch_range(
+        self, start: date, end: date, *, observed_at: datetime | None = None
+    ) -> list[EventSnapshot]:
+        """Every free-plan match from `start` to `end` inclusive, in one request.
+
+        The free plan caps a range at ten days.
+        """
+        if (end - start).days >= MAX_RANGE_DAYS:
+            raise ValueError(f"football-data.org ranges are at most {MAX_RANGE_DAYS} days")
+        params = {"dateFrom": start.isoformat(), "dateTo": end.isoformat()}
+        return self._matches(params, observed_at)
+
+    def _matches(self, params: dict[str, str], observed_at: datetime | None) -> list[EventSnapshot]:
         self._before_request()
         try:
             response = self._client.get(

@@ -2,6 +2,7 @@ import json
 from datetime import UTC, datetime, timedelta
 
 from sports_betting.health import (
+    COUNTING_VERSION,
     IDLE_RUN_THRESHOLD,
     STALE_INTERVAL_FACTOR,
     HealthStore,
@@ -103,34 +104,90 @@ def test_a_job_with_no_declared_cadence_is_never_stale(tmp_path):
     assert status_for(_entry(store), now=far_future) == "ok"
 
 
-def test_repeated_successes_that_write_nothing_read_as_idle(tmp_path):
-    """A provider answering 200 OK while storing nothing is healthy by every other measure."""
+def test_repeated_successes_that_deliver_nothing_read_as_idle(tmp_path):
+    """A provider answering 200 OK while delivering nothing is healthy by every other measure."""
     store = _store(tmp_path)
 
     for _ in range(IDLE_RUN_THRESHOLD - 1):
-        store.record("collector", JobOutcome("ok", fetched=5, added=0))
+        store.record("collector", JobOutcome("ok", fetched=0, added=0))
     assert status_for(_entry(store)) == "ok"  # one empty day proves nothing
 
-    store.record("collector", JobOutcome("ok", fetched=5, added=0))
+    store.record("collector", JobOutcome("ok", fetched=0, added=0))
     assert status_for(_entry(store)) == "idle"
 
     store.record("collector", JobOutcome("ok", fetched=5, added=2))
     assert status_for(_entry(store)) == "ok"
 
 
-def test_a_run_with_nothing_due_is_not_a_writeless_success(tmp_path):
+def test_rows_already_stored_are_a_delivery_not_an_empty_run(tmp_path):
+    """football-data re-reads the same finished matches all day: three runs that fetched
+    them and stored nothing new read the job "idle" while the provider answered every time."""
+    store = _store(tmp_path)
+    store.record("collector", JobOutcome("ok", fetched=0, added=0))
+    store.record("collector", JobOutcome("ok", fetched=0, added=0))
+
+    for _ in range(IDLE_RUN_THRESHOLD):
+        store.record("collector", JobOutcome("ok", fetched=1, added=0))
+
+    entry = _entry(store)
+    assert entry["empty_successes"] == 0  # the delivery broke the streak
+    assert entry["last_wrote"] is None  # but nothing was written, and that stays visible
+    assert status_for(entry) == "ok"
+
+
+def test_a_run_with_nothing_due_is_not_an_empty_success(tmp_path):
     """API-Sports collects each day once but runs every six hours, so three runs in four
     ask nothing of the provider; counting those read the job "idle" every afternoon."""
     store = _store(tmp_path)
-    store.record("collector", JobOutcome("ok", fetched=5, added=0))
+    store.record("collector", JobOutcome("ok", fetched=0, added=0))
 
     for _ in range(IDLE_RUN_THRESHOLD):
         store.record("collector", JobOutcome("ok", detail="days none due", due=False))
 
     entry = _entry(store)
-    assert entry["writeless_successes"] == 1  # neither counted nor reset
+    assert entry["empty_successes"] == 1  # neither counted nor reset
     assert entry["last_success"] is not None  # still ran, so never stale for it
     assert status_for(entry) == "ok"
+
+
+def _artifact(path, counting):
+    job = {
+        "runs": 7,
+        "last_success": "2026-10-04T20:32:26+00:00",
+        "empty_successes": IDLE_RUN_THRESHOLD,
+    }
+    payload: dict = {"jobs": {"collector": job}}
+    if counting is not None:
+        payload["counting"] = counting
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+
+def test_a_streak_counted_under_older_rules_does_not_survive_a_deploy(tmp_path):
+    """The fix that stopped counting API-Sports' "none due" runs shipped, and the seeded
+    streak of 3 it had already built kept the job `idle` until the next day's collection."""
+    path = tmp_path / "health.json"
+    for counting in (None, COUNTING_VERSION - 1):
+        _artifact(path, counting)
+        store = HealthStore(path)
+
+        assert store.seed() is True
+
+        entry = _entry(store)
+        assert entry["empty_successes"] == 0
+        assert entry["runs"] == 7  # only the recounted streak is dropped
+        assert status_for(entry) == "ok"
+
+
+def test_a_streak_counted_under_the_current_rules_survives_a_restart(tmp_path):
+    path = tmp_path / "health.json"
+    store = HealthStore(path)
+    for _ in range(IDLE_RUN_THRESHOLD):
+        store.record("collector", JobOutcome("ok", fetched=0, added=0))
+    assert json.loads(path.read_text(encoding="utf-8"))["counting"] == COUNTING_VERSION
+
+    restarted = HealthStore(path)
+    assert restarted.seed() is True
+    assert status_for(_entry(restarted)) == "idle"
 
 
 def test_failing_outranks_stale_because_it_is_the_actionable_fact(tmp_path):

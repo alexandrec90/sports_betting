@@ -1,11 +1,18 @@
 import json
+from datetime import date
 
 import pytest
 
 from sports_betting.config import Settings
-from sports_betting.health import status_for
+from sports_betting.health import IDLE_RUN_THRESHOLD, status_for
+from sports_betting.providers.football_data import MAX_RANGE_DAYS
 from sports_betting.providers.thesportsdb import SportsDataProviderError
-from sports_betting.scheduler import CollectionJobs, _partial_outcome, build_scheduler
+from sports_betting.scheduler import (
+    FOOTBALL_DATA_AHEAD_DAYS,
+    CollectionJobs,
+    _partial_outcome,
+    build_scheduler,
+)
 
 
 def test_keyed_jobs_skip_without_credentials_and_write_health(tmp_path):
@@ -117,6 +124,55 @@ def test_one_unavailable_sport_no_longer_discards_the_sports_that_worked(tmp_pat
     # ...but the failing sport stays visible instead of being discarded.
     assert "epl" in entry["last_error"]
     assert entry["degraded_runs"] == 1
+
+
+def test_football_data_reads_the_coming_week_so_a_quiet_calendar_is_not_idle(tmp_path, monkeypatch):
+    """Yesterday and today held one match in the 2026-10-03 international break, so three
+    six-hourly runs found nothing new and the job read `idle` while the provider answered."""
+    settings = Settings(
+        archive_root=tmp_path / "archive",
+        scheduler_health_file=tmp_path / "health.json",
+        provider_quota_file=tmp_path / "quota.json",
+        football_data_api_key="test-key",  # pragma: allowlist secret - dummy, client is faked
+    )
+    windows = []
+
+    class FakeClient:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def fetch_range(self, start, end, **_kwargs):
+            windows.append((start, end))
+            return [_snapshot("fixture-next-weekend")]
+
+    monkeypatch.setattr("sports_betting.scheduler.FootballDataClient", FakeClient)
+    jobs = CollectionJobs(settings)
+
+    for _ in range(IDLE_RUN_THRESHOLD + 1):
+        outcome = jobs.football_data()
+
+    assert outcome.fetched == 1 and outcome.added == 0  # stored on the first run only
+    entry = json.loads(settings.scheduler_health_file.read_text())["jobs"]["football-data"]
+    assert status_for(entry) == "ok"
+    start, end = windows[0]
+    assert (start, end) == CollectionJobs.football_data_window()
+    assert (end - start).days == FOOTBALL_DATA_AHEAD_DAYS + 1
+
+
+def test_the_football_data_window_fits_the_free_plan_range():
+    today = date(2026, 10, 4)
+
+    start, end = CollectionJobs.football_data_window(today)
+
+    assert start == date(2026, 10, 3)  # yesterday's results stay in
+    assert end > today
+    assert (end - start).days < MAX_RANGE_DAYS
 
 
 def _snapshot(external_id: str):

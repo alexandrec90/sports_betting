@@ -39,10 +39,19 @@ from typing import Any
 #: and a half intervals means a single missed run is not yet an alarm, but two are.
 STALE_INTERVAL_FACTOR = 2.5
 
-#: How many consecutive writeless successes count as "idle". A collector may legitimately add
-#: nothing when a day has no new fixtures, so one empty run proves nothing; a provider that has
-#: answered successfully three times running and stored nothing is not actually collecting.
+#: How many consecutive empty successes count as "idle". A provider may legitimately return
+#: nothing for a quiet window, so one empty run proves nothing; a provider that has answered
+#: successfully three times running and delivered nothing is not actually collecting. A run
+#: that fetched rows already stored is not empty: the provider delivered, and the window
+#: simply held nothing new -- football-data re-reads the same finished matches all day.
 IDLE_RUN_THRESHOLD = 3
+
+#: Which rules `record` counts the streaks by. Bump it whenever a change alters what a
+#: counter counts: `seed` zeroes `empty_successes` in an artifact written under another
+#: version, so the corrected rule judges the job from the first deploy instead of after
+#: the streak the old rule built happens to break. Without it, the fix that stopped
+#: counting API-Sports' "none due" runs left a seeded streak of 3 reading `idle` for a day.
+COUNTING_VERSION = 2
 
 
 def _blank(job: str) -> dict[str, Any]:
@@ -53,7 +62,7 @@ def _blank(job: str) -> dict[str, Any]:
         "failures": 0,
         "consecutive_failures": 0,
         "degraded_runs": 0,
-        "writeless_successes": 0,
+        "empty_successes": 0,
         "last_run": None,
         "last_success": None,
         "last_failure": None,
@@ -140,10 +149,13 @@ class HealthStore:
                 entry["last_error"] = None
             if outcome.added > 0:
                 entry["last_wrote"] = stamp
-                entry["writeless_successes"] = 0
+                entry["empty_successes"] = 0
             elif outcome.due:
-                # A run with nothing due neither counts nor resets: it asked nothing.
-                entry["writeless_successes"] += 1
+                # A run with nothing due neither counts nor resets: it asked nothing. One that
+                # fetched only rows already stored resets: the provider delivered.
+                entry["empty_successes"] = (
+                    0 if outcome.fetched > 0 else entry["empty_successes"] + 1
+                )
             self._write_locked()
 
     # -- reading -----------------------------------------------------------------------
@@ -162,7 +174,8 @@ class HealthStore:
         so the recorded facts (including an open failure streak) carry over unchanged.
 
         Unknown keys are dropped rather than merged: an artifact written by an older build
-        must not inject a shape this code does not expect.
+        must not inject a shape this code does not expect. Nor does a streak counted under
+        another `COUNTING_VERSION` carry over: that rule is the one a fix just replaced.
         """
         try:
             loaded = json.loads(self.path.read_text(encoding="utf-8"))
@@ -171,6 +184,7 @@ class HealthStore:
         jobs = loaded.get("jobs") if isinstance(loaded, dict) else None
         if not isinstance(jobs, dict):
             return False
+        recount = loaded.get("counting") != COUNTING_VERSION
         with self._lock:
             for name, stored in jobs.items():
                 if not isinstance(stored, dict):
@@ -178,6 +192,8 @@ class HealthStore:
                 entry = _blank(str(name))
                 entry.update({key: value for key, value in stored.items() if key in entry})
                 entry["job"] = str(name)
+                if recount:
+                    entry["empty_successes"] = 0
                 self._registry[str(name)] = entry
         return True
 
@@ -207,6 +223,7 @@ class HealthStore:
     def _snapshot_locked(self) -> dict[str, Any]:
         return {
             "written_at": _now(),
+            "counting": COUNTING_VERSION,
             "jobs": {job: dict(entry) for job, entry in self._registry.items()},
         }
 
@@ -259,7 +276,7 @@ def status_for(entry: dict[str, Any], *, now: datetime | None = None) -> str:
         return "stale"
     if entry.get("last_status") == "partial":
         return "degraded"
-    if entry.get("writeless_successes", 0) >= IDLE_RUN_THRESHOLD:
+    if entry.get("empty_successes", 0) >= IDLE_RUN_THRESHOLD:
         return "idle"
     return "ok"
 

@@ -44,6 +44,10 @@ from sports_betting.throttle import (
 #: Stop when the provider reports this few credits left, whatever our own ledger says.
 ODDS_PROVIDER_RESERVE = 25
 
+#: How many days of upcoming football-data fixtures each run reads beyond today. With
+#: yesterday that is nine days, inside the free plan's ten-day range.
+FOOTBALL_DATA_AHEAD_DAYS = 7
+
 
 @dataclass(frozen=True)
 class JobOutcome:
@@ -53,7 +57,7 @@ class JobOutcome:
     detail: str = ""
     # False when the job had nothing to ask its provider, as API-Sports between its
     # once-per-UTC-day collections: such a run says nothing about whether the provider
-    # still delivers, so the health store does not count it as a writeless success.
+    # still delivers, so the health store does not count it as an empty success.
     due: bool = True
 
 
@@ -189,23 +193,30 @@ class CollectionJobs:
         current = today or datetime.now(UTC).date()
         return current - timedelta(days=1), current
 
+    @staticmethod
+    def football_data_window(today: date | None = None) -> tuple[date, date]:
+        """Yesterday's results through the coming week's fixtures.
+
+        Results alone left the window empty through an international break or a midweek
+        with no covered match, so the job read `idle` while the provider answered every
+        run. A week of fixtures makes an empty answer mean the provider, not the calendar.
+        """
+        current = today or datetime.now(UTC).date()
+        return current - timedelta(days=1), current + timedelta(days=FOOTBALL_DATA_AHEAD_DAYS)
+
     def football_data(self) -> JobOutcome:
         if not self.settings.football_data_api_key:
             return self._finish("football-data", JobOutcome("skipped", detail="API key not set"))
 
         def collect() -> JobOutcome:
-            fetched = added = 0
             with FootballDataClient(
                 self.settings.football_data_api_key,
                 timeout_seconds=self.settings.sportsdb_timeout_seconds,
                 before_request=self.football_gate,
             ) as client:
-                for day in self.collection_days():
-                    snapshots = client.fetch_day(day)
-                    result = self.events.write(snapshots)
-                    fetched += len(snapshots)
-                    added += result.snapshots_added
-            return JobOutcome("ok", fetched, added)
+                snapshots = client.fetch_range(*self.football_data_window())
+            result = self.events.write(snapshots)
+            return JobOutcome("ok", len(snapshots), result.snapshots_added)
 
         return self._run("football-data", collect)
 

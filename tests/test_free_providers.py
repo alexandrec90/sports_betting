@@ -50,6 +50,27 @@ def test_football_data_fetches_a_day_in_one_request_and_normalizes_result():
     assert (events[0].home_score, events[0].away_score) == ("2", "0")
 
 
+def test_football_data_fetches_a_range_in_one_request():
+    seen = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(dict(request.url.params))
+        return httpx.Response(200, json={"matches": []})
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    provider = FootballDataClient("test-key", client=client)
+
+    assert provider.fetch_range(date(2026, 10, 3), date(2026, 10, 11)) == []
+    assert seen == [{"dateFrom": "2026-10-03", "dateTo": "2026-10-11"}]
+
+
+def test_football_data_refuses_a_range_the_free_plan_rejects():
+    provider = FootballDataClient("test-key", client=httpx.Client())
+
+    with pytest.raises(ValueError, match="at most 10 days"):
+        provider.fetch_range(date(2026, 10, 1), date(2026, 10, 11))
+
+
 def test_balldontlie_normalizes_mlb_nested_runs_and_epl_team_order():
     responses = {
         "/mlb/v1/games": {

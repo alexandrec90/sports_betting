@@ -4,13 +4,13 @@ version = "0.1.0"
 description = "Sports bet automater and data collector"
 requires-python = ">=3.12"
 dependencies = [
-  "sqlalchemy>=2.1.1",
+  "sqlalchemy>=2.1.3",
   "psycopg[binary]>=3.3.6",
   "httpx>=0.27",
   "apscheduler>=3.11,<4",
   "pyarrow>=25.0.1",
-  "duckdb>=1.1",
-  "boto3>=1.43.103",
+  "duckdb>=1.5.6",
+  "boto3>=1.43.108",
   "pydantic-settings>=2.15.0",
   "openpyxl>=3.1",
 ]
@@ -45,8 +45,8 @@ sports-betting = "sports_betting.cli:main"
 # Host-only toolchain. Deliberately NOT installed into the container image — it is
 # several hundred MB of tooling the runtime never imports.
 dev = [
-  "ruff>=0.16.9",
-  "mypy>=2.3.1",
+  "ruff>=0.16.10",
+  "mypy>=2.4.0",
   # openpyxl ships no inline types; without the stubs mypy fails on `import openpyxl`.
   "types-openpyxl>=3.1",
   "pytest>=9.1",

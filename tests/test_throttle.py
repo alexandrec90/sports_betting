@@ -84,6 +84,19 @@ def test_throttle_claims_its_cost_per_request_against_the_month(tmp_path):
     assert ledger.used("odds") == (2, 4)
 
 
+def test_throttle_counts_only_the_requests_it_let_through(tmp_path):
+    ledger = QuotaLedger(tmp_path / "quota.json")
+    gate = ProviderThrottle(
+        "odds", min_interval_seconds=0, budget=QuotaBudget(ledger, daily_limit=2)
+    )
+    assert gate.let_through == 0
+    gate()
+    gate()
+    with pytest.raises(DailyQuotaExceededError):
+        gate()
+    assert gate.let_through == 2
+
+
 def test_provider_throttle_spaces_requests_without_sleeping_before_first():
     clock = [100.0]
     sleeps = []

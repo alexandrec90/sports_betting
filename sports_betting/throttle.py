@@ -141,11 +141,15 @@ class ProviderThrottle:
         self._sleep = sleep
         self._last_request: float | None = None
         self._lock = threading.Lock()
+        #: Requests this gate has let through, so a job can tell a run that asked its
+        #: provider something from one its budget stopped before the first request.
+        self.let_through = 0
 
     def __call__(self) -> None:
         with self._lock:
             if self.budget is not None:
                 self.budget.claim(self.provider)
+            self.let_through += 1
             now = self._monotonic()
             if self._last_request is not None:
                 delay = self.min_interval_seconds - (now - self._last_request)

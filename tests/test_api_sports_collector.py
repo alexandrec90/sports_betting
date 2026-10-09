@@ -287,6 +287,24 @@ def test_job_stops_quietly_when_the_daily_budget_is_spent(monkeypatch, tmp_path)
     assert (outcome.status, outcome.fetched) == ("ok", 8)
     assert "daily budget spent during 2026-10-03" in outcome.detail
     assert jobs.api_sports_job.days_due(NOW) == [date(2026, 10, 3), date(2026, 10, 4)]
+    assert outcome.due  # it asked, so an empty answer here would count
+
+
+def test_a_run_its_spent_budget_stopped_before_any_request_is_not_due(monkeypatch, tmp_path):
+    """d4fce898: the first run of each UTC day spent the budget, and the three six-hourly
+    runs after it -- days still due, nothing asked -- read `idle` every evening."""
+    api = FakeApiSports([fixture(i, league=EPL) for i in range(1, 10)])
+    run_job(monkeypatch, tmp_path, api, api_sports_daily_budget=6)
+    asked = len(api.requests)
+
+    later, _ = run_job(
+        monkeypatch, tmp_path, api, now=NOW + timedelta(hours=6), api_sports_daily_budget=6
+    )
+
+    assert len(api.requests) == asked, "the spent budget refused the first request"
+    assert later.detail.startswith("days none; daily budget spent during 2026-10-03")
+    assert (later.status, later.fetched) == ("ok", 0)
+    assert not later.due  # so the health store does not read it as an idle provider
 
 
 def test_job_reports_a_provider_error_and_moves_on_to_the_next_day(monkeypatch, tmp_path):

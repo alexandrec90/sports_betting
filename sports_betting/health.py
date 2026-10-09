@@ -51,7 +51,8 @@ IDLE_RUN_THRESHOLD = 3
 #: version, so the corrected rule judges the job from the first deploy instead of after
 #: the streak the old rule built happens to break. Without it, the fix that stopped
 #: counting API-Sports' "none due" runs left a seeded streak of 3 reading `idle` for a day.
-COUNTING_VERSION = 2
+#: 3: a run its daily budget stopped before the first request no longer counts either.
+COUNTING_VERSION = 3
 
 
 def _blank(job: str) -> dict[str, Any]:

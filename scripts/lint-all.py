@@ -154,6 +154,68 @@ def run_tool(name: str, cmd: list[str], fix_hint: str) -> str:
     return f"# {name}\n# fix: {fix_hint}\n{body}\n\n"
 
 
+def python_sections(scope: list[str], targets: list[str]) -> str:
+    """Auto-fix `scope`, then report what ruff and mypy still find there.
+
+    Both ruff passes mutate the same files, so they must stay sequential relative to
+    each other, and both skip the vendored harness — see NO_FIX_SCOPE.
+    """
+    no_fix = [arg for path in NO_FIX_SCOPE for arg in ("--exclude", path)]
+    subprocess.run(
+        [sys.executable, "-m", "ruff", "check", *scope, "--fix", "--unsafe-fixes", *no_fix],
+        cwd=REPO_ROOT,
+        capture_output=True,
+    )
+    subprocess.run(
+        [sys.executable, "-m", "ruff", "format", *scope, *no_fix],
+        cwd=REPO_ROOT,
+        capture_output=True,
+    )
+    sections = run_tool(
+        "ruff",
+        [sys.executable, "-m", "ruff", "check", *scope, "--output-format=full"],
+        "ruff check . --fix --unsafe-fixes",
+    )
+    return sections + run_tool(
+        "mypy",
+        [sys.executable, "-m", "mypy", *(targets or MYPY_SCOPE), "--show-error-codes"],
+        f"mypy {' '.join(MYPY_SCOPE)} --show-error-codes",
+    )
+
+
+def rerun_in_tree_venv(module: str, argv: list[str] | None) -> int | None:
+    """This run's exit code under the tree's `.venv`, or None to carry on here.
+
+    Without it, the system interpreter lints *clean*: every linter is `-m` under an
+    interpreter that lacks it, so `_missing_module` skips them all and the run still
+    prints "lint-all: clean". The vendored `scripts/hooks/toolchain.py` runs this script
+    again inside the tree's `.venv`; where this interpreter already has `module`, or
+    the vendored copy predates that, nothing changes.
+    """
+    hooks = REPO_ROOT / "scripts" / "hooks"
+    if not (hooks / "toolchain.py").is_file():
+        return None
+    sys.path.insert(0, str(hooks))
+    try:
+        # By name rather than an import statement: `scripts/hooks` is vendored and kept
+        # off mypy's path, so a static import is one it cannot resolve.
+        toolchain = importlib.import_module("toolchain")
+        rerun = toolchain.rerun_in_venv
+    except (ImportError, AttributeError):
+        return None
+    return rerun(
+        REPO_ROOT, module, Path(__file__).resolve(), sys.argv[1:] if argv is None else argv
+    )
+
+
+def selection(args: argparse.Namespace) -> list[str] | None:
+    """The files a narrowed run lints -- `--paths`, else the working-tree diff for
+    `--changed` -- or None for the whole repo."""
+    if args.paths is not None:
+        return list(args.paths)
+    return changed_paths() if args.changed else None
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     scope_group = parser.add_mutually_exclusive_group()
@@ -181,8 +243,12 @@ def main(argv: list[str] | None = None) -> int:
         help="skip the secrets pass (accepted for Stop-hook compatibility; no-op here)",
     )
     args = parser.parse_args(argv)
+    # After parsing, so `/ship`'s `--help` probe answers without installing anything.
+    rerun = rerun_in_tree_venv("ruff", argv)
+    if rerun is not None:
+        return rerun
 
-    selected = args.paths if args.paths is not None else changed_paths() if args.changed else None
+    selected = selection(args)
     targets = changed_python_files(selected) if selected is not None else []
     workflows = workflow_files(selected)
     envs = env_files(selected)
@@ -200,31 +266,7 @@ def main(argv: list[str] | None = None) -> int:
     # and `scope` then falls back to `["."]` — which would silently widen a scoped
     # check into a whole-repo pass. Gate the Python passes on having Python to lint.
     if targets or not narrowed:
-        # Auto-fix first, then report. Both ruff passes mutate the same files, so they
-        # must stay sequential relative to each other, and both skip the vendored
-        # harness — see NO_FIX_SCOPE.
-        no_fix = [arg for path in NO_FIX_SCOPE for arg in ("--exclude", path)]
-        subprocess.run(
-            [sys.executable, "-m", "ruff", "check", *scope, "--fix", "--unsafe-fixes", *no_fix],
-            cwd=REPO_ROOT,
-            capture_output=True,
-        )
-        subprocess.run(
-            [sys.executable, "-m", "ruff", "format", *scope, *no_fix],
-            cwd=REPO_ROOT,
-            capture_output=True,
-        )
-
-        sections += run_tool(
-            "ruff",
-            [sys.executable, "-m", "ruff", "check", *scope, "--output-format=full"],
-            "ruff check . --fix --unsafe-fixes",
-        )
-        sections += run_tool(
-            "mypy",
-            [sys.executable, "-m", "mypy", *(targets or MYPY_SCOPE), "--show-error-codes"],
-            f"mypy {' '.join(MYPY_SCOPE)} --show-error-codes",
-        )
+        sections += python_sections(scope, targets)
 
     # `.claude/hooks/session-start.sh` installs both of these into every session, so
     # a provisioned checkout has them. They are real executables rather than `-m`

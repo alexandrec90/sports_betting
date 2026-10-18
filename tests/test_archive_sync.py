@@ -13,6 +13,7 @@ import pytest
 from sports_betting.archive.bulk import BulkArchive
 from sports_betting.archive.sync import (
     ArchiveSync,
+    in_scope,
     restore_sources,
     scan,
     store_for,
@@ -95,6 +96,31 @@ def test_scan_skips_staging_and_partial_downloads(tmp_path):
     keys = {c.key for c in scan(tmp_path)}
 
     assert keys == {"sports_events/a.parquet"}
+
+
+def test_scan_narrowed_to_datasets_keeps_only_their_files_and_catalog_entries(tmp_path):
+    for key in (
+        "sports_events/a.parquet",
+        "_catalog/sports_events.json",
+        "_catalog/social_scraper_posts.json",
+        "social_scraper/posts.parquet",
+    ):
+        (tmp_path / key).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / key).write_bytes(b"x")
+
+    keys = {c.key for c in scan(tmp_path, {"sports_events"})}
+
+    assert keys == {"sports_events/a.parquet", "_catalog/sports_events.json"}
+    assert len(scan(tmp_path)) == 4
+
+
+def test_in_scope():
+    assert in_scope("anything/at/all", None)
+    assert in_scope("sports_odds/x/odds.parquet", {"sports_odds"})
+    assert in_scope("_catalog/sports_odds.json", {"sports_odds"})
+    assert not in_scope("_catalog/sports_odds_extra.json", {"sports_odds"})
+    assert not in_scope("sports_odds", {"sports_odds"})
+    assert not in_scope("social_scraper/x.parquet", {"sports_odds"})
 
 
 def test_scan_classifies_sources_parquet_and_dataset(tmp_path):

@@ -55,19 +55,31 @@ class OddsArchive:
         added = 0
         paths: list[str] = []
         for relative, incoming in sorted(grouped.items(), key=lambda pair: str(pair[0])):
-            path = self._safe_path(relative)
-            existing = pq.read_table(path).to_pylist() if path.is_file() else []
-            merged = {_key(row): row for row in existing}
-            before = len(merged)
-            for row in incoming:
-                merged.setdefault(_key(row), row)
-            rows = sorted(merged.values(), key=lambda row: (row["event_ts"], *_key(row)))
-            self._write_verified(path, rows)
-            added += len(merged) - before
+            added += self.merge_rows(relative, incoming)
             paths.append(relative.as_posix())
         if paths:
             self._write_catalog()
         return OddsWriteResult(len(snapshots), added, tuple(paths))
+
+    def merge_rows(self, relative: Path, incoming: list[dict[str, Any]]) -> int:
+        """Union `incoming` into the partition at `relative`; returns the rows it added.
+
+        Rows are keyed by `NATURAL_KEY`, whose `payload_hash` makes a key name one exact
+        observation, so a row already stored wins and nothing is ever replaced. A partition
+        that gains nothing is left untouched. `scripts/handoff.py` merges another machine's
+        copy of a partition through here, which is what makes a pull unable to lose a row.
+        """
+        path = self._safe_path(relative)
+        existing = pq.read_table(path).to_pylist() if path.is_file() else []
+        merged = {_key(row): row for row in existing}
+        before = len(merged)
+        for row in incoming:
+            merged.setdefault(_key(row), row)
+        added = len(merged) - before
+        if added:
+            rows = sorted(merged.values(), key=lambda row: (row["event_ts"], *_key(row)))
+            self._write_verified(path, rows)
+        return added
 
     def rebuild_catalog(self) -> None:
         """Recompute the manifest from the stored partitions. Used by the shape migration."""

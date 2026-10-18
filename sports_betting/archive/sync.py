@@ -29,7 +29,7 @@ from __future__ import annotations
 import hashlib
 import io
 import json
-from collections.abc import Iterator
+from collections.abc import Collection, Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol
@@ -163,9 +163,24 @@ def _dataset_of(relative: Path) -> str:
     return parts[0] if parts else ""
 
 
-def scan(root: Path | str) -> list[Candidate]:
+def in_scope(key: str, datasets: Collection[str] | None) -> bool:
+    """Whether the object at `key` belongs to one of `datasets` (every key when None).
+
+    A dataset owns its own top-level directory and its `_catalog/<dataset>.json` entry --
+    nothing else, because `ARCHIVE_ROOT` is the pooled tree other projects write into too.
+    """
+    if datasets is None:
+        return True
+    parts = Path(key).parts
+    if len(parts) == 2 and parts[0] == CATALOG_DIRNAME:
+        return parts[1].endswith(".json") and parts[1][: -len(".json")] in datasets
+    return len(parts) > 1 and parts[0] in datasets
+
+
+def scan(root: Path | str, datasets: Collection[str] | None = None) -> list[Candidate]:
     """Every mirrorable file under `root`, deepest-first-stable and deterministic.
 
+    `datasets` narrows it to those datasets' files and catalog entries (`in_scope`).
     Pure and filesystem-only so the planning half can be tested without a store.
     """
     base = Path(root).resolve()
@@ -179,6 +194,8 @@ def scan(root: Path | str) -> list[Candidate]:
         if EXCLUDED_DIRS.intersection(relative.parts):
             continue
         if path.name.endswith((".tmp", ".part")):
+            continue
+        if not in_scope(relative.as_posix(), datasets):
             continue
         dataset = _dataset_of(relative)
         candidates.append(
@@ -208,17 +225,19 @@ class ArchiveSync:
         *,
         backend: str = "unknown",
         max_object_bytes: int = DEFAULT_MAX_OBJECT_BYTES,
+        datasets: Collection[str] | None = None,
     ):
         self.root = Path(root).resolve()
         self.store = store
         self.backend = backend
         self.max_object_bytes = max_object_bytes
+        self.datasets = datasets
 
     def run(self, *, prune: bool = False, dry_run: bool = False) -> SyncSummary:
         summary = SyncSummary(backend=self.backend, dry_run=dry_run)
         pruned_provenance: set[Path] = set()
         pruned_by_dataset: dict[str, set[str]] = {}
-        for candidate in scan(self.root):
+        for candidate in scan(self.root, self.datasets):
             summary.scanned += 1
             outcome = self._process(candidate, prune=prune, dry_run=dry_run)
             summary.outcomes.append(outcome)

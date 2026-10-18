@@ -1,5 +1,6 @@
 import json
 from datetime import UTC, datetime
+from pathlib import Path
 
 import pyarrow.parquet as pq
 
@@ -53,6 +54,19 @@ def test_write_creates_self_describing_catalog(tmp_path):
     assert manifest["ts_column"] == "event_ts"
     assert manifest["partitions"][result.partitions[0]]["rows"] == 1
     assert "payload_json" in manifest["schema"]
+
+
+def test_merge_rows_keeps_every_stored_row_and_adds_only_new_ones(tmp_path):
+    archive = EventArchive(tmp_path)
+    relative = Path(archive.write([snapshot()]).partitions[0])
+    path = tmp_path / relative
+    before = path.read_bytes()
+    stored = pq.read_table(path).to_pylist()
+
+    assert archive.merge_rows(relative, stored) == 0
+    assert path.read_bytes() == before
+    assert archive.merge_rows(relative, [snapshot(score="5").as_record()]) == 1
+    assert pq.read_table(path).num_rows == 2
 
 
 def test_empty_write_does_not_create_archive(tmp_path):

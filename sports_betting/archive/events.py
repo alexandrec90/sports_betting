@@ -62,20 +62,29 @@ class EventArchive:
         added = 0
         written: list[str] = []
         for relative, incoming in sorted(grouped.items(), key=lambda pair: str(pair[0])):
-            path = self._safe_path(relative)
-            existing = pq.read_table(path).to_pylist() if path.is_file() else []
-            merged = {_key(row): row for row in existing}
-            before = len(merged)
-            for row in incoming:
-                merged.setdefault(_key(row), row)
-            rows = sorted(merged.values(), key=_key)
-            self._write_verified(path, rows)
-            added += len(merged) - before
+            added += self.merge_rows(relative, incoming)
             written.append(relative.as_posix())
 
         if written:
             self._write_catalog()
         return WriteResult(len(snapshots), added, tuple(written))
+
+    def merge_rows(self, relative: Path, incoming: list[dict[str, Any]]) -> int:
+        """Union `incoming` into the partition at `relative`; returns the rows it added.
+
+        The same rule as `OddsArchive.merge_rows`: keyed by `NATURAL_KEY`, a stored row
+        wins, nothing is replaced, and a partition that gains nothing is not rewritten.
+        """
+        path = self._safe_path(relative)
+        existing = pq.read_table(path).to_pylist() if path.is_file() else []
+        merged = {_key(row): row for row in existing}
+        before = len(merged)
+        for row in incoming:
+            merged.setdefault(_key(row), row)
+        added = len(merged) - before
+        if added:
+            self._write_verified(path, sorted(merged.values(), key=_key))
+        return added
 
     def rebuild_catalog(self) -> None:
         """Recompute the manifest from the stored partitions. Used by the shape migration."""

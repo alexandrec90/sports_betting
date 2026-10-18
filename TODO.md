@@ -34,3 +34,4 @@ because guessing them wrong is worse than leaving them blank.
 - [x] Schedule all four free providers with restart-safe throttling and health artifacts
 - [x] Adopt the sibling lake package and build the archive mirror (upload → verify → prune)
 - [x] Resolve the `_catalog/` shape collision with the lake's `DatasetManifest`
+- [x] Move the collector between PCs with its data and state (`scripts/handoff.py`)

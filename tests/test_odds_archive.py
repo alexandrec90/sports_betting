@@ -1,5 +1,6 @@
 import json
 from datetime import UTC, datetime
+from pathlib import Path
 
 import pyarrow.parquet as pq
 
@@ -35,3 +36,22 @@ def test_odds_archive_is_idempotent_and_preserves_line_movements(tmp_path):
     assert len(rows) == 2
     manifest = json.loads((tmp_path / "_catalog" / "sports_odds.json").read_text())
     assert manifest["partitions"][first.partitions[0]]["rows"] == 2
+
+
+def test_merge_rows_unions_and_leaves_an_unchanged_partition_alone(tmp_path):
+    archive = OddsArchive(tmp_path)
+    relative = Path(archive.write([snapshot(1.9)]).partitions[0])
+    path = tmp_path / relative
+    before = path.read_bytes()
+    stored = pq.read_table(path).to_pylist()
+
+    assert archive.merge_rows(relative, stored) == 0
+    assert path.read_bytes() == before
+    assert archive.merge_rows(relative, [snapshot(2.0).as_record(), *stored]) == 1
+    prices = [
+        json.loads(r["payload_json"])["bookmakers"][0]["price"]
+        for r in pq.read_table(path).to_pylist()
+    ]
+    assert sorted(prices) == [1.9, 2.0]
+    assert archive.merge_rows(Path("sports_odds/new/odds.parquet"), []) == 0
+    assert not (tmp_path / "sports_odds" / "new").exists()

@@ -50,6 +50,24 @@ STATSBOMB_LICENSE = (
 MONEYPUCK_LICENSE = ("Non-commercial use with attribution", "https://moneypuck.com/data.htm")
 TENNIS_DATA_LICENSE = ("Tennis-Data.co.uk terms", "http://www.tennis-data.co.uk/data.php")
 
+#: Every dataset an importer below writes through `BulkArchive`. `scripts/handoff.py`
+#: carries exactly these (plus the odds and events datasets) between machines, so a
+#: dataset missing here is one a handoff silently leaves behind; `tests/test_handoff.py`
+#: reads every `dataset=` literal in this module and fails when the two disagree.
+BULK_DATASETS = frozenset(
+    {
+        "football_data_uk_matches",
+        "football_data_uk_extra_matches",
+        "tennis_data_matches",
+        "nflverse_play_by_play",
+        "moneypuck_shots",
+        "moneypuck_team_games",
+        "statsbomb_matches",
+        "statsbomb_events",
+        "statsbomb_competitions",
+    }
+)
+
 
 @dataclass(frozen=True)
 class DownloadResult:

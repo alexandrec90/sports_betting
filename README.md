@@ -203,6 +203,13 @@ general Cloudflare API token does not authenticate against the S3 endpoint. Regi
 > declined on good grounds — but nothing here needs one: the largest artifact any configured
 > source produces is ~20 MB, so the ceiling has ~10× headroom over the real worst case.
 
+### Moving the collector to the other PC
+
+`scripts/handoff.py` carries this project's datasets and the scheduler's state files
+through the same store, so devkit's `collectors.py move sports_betting --to HOST` can
+switch PCs. The import merges into a partial local tree and never overwrites it. See
+[collector handoff](docs/collector-handoff.md).
+
 ### Manifest shape
 
 `_catalog/<dataset>.json` uses the sibling lake's `DatasetManifest` shape — `ts_column`, and

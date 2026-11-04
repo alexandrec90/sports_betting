@@ -672,6 +672,17 @@ def test_publish_refreshes_a_partition_the_store_already_holds(tmp_path, capsys)
     assert key in payload["refreshed"]
 
 
+def test_publish_reports_what_it_sent(tmp_path):
+    a = machine(tmp_path, "a")
+    store = FakeStore()
+    collect(a, 1.1)
+
+    pushed = handoff.publish(deps_for(a, store))
+
+    assert pushed["uploaded"] > 0 and pushed["present"] == 0
+    assert handoff.publish(deps_for(a, store))["uploaded"] == 0
+
+
 def test_publish_hands_nothing_over(tmp_path, capsys):
     a = machine(tmp_path, "a")
     stops: list[str] = []

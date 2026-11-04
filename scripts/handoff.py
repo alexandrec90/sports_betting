@@ -12,6 +12,7 @@ container and calls this script for everything in between, from this checkout:
     uv run python scripts/handoff.py export --from PC-A --to PC-B
     uv run python scripts/handoff.py pending --host PC-B
     uv run python scripts/handoff.py import --host PC-B
+    uv run python scripts/handoff.py publish
 
 - **export** brings this disk and the store together (`converge.pull`, then
   `converge.push`), uploads the state files, then the manifest of what the other machine
@@ -22,6 +23,13 @@ container and calls this script for everything in between, from this checkout:
   pulls under the merge rule in `sports_betting/archive/converge.py` -- a local partition
   is merged into, never written over -- verifies the result against the manifest, restores
   the state files, and marks the handoff `imported`. It never starts `collector`.
+- **publish** makes the store current with this disk (`converge.push`) while `collector`
+  runs, so the other PC can model on what this one collected. It writes no marker and
+  carries no state, so nothing is handed over; it stops nothing; and it never pulls, since
+  a pull rewrites the partitions the running collector is writing. The store's rows are
+  held to a subset of this disk's, so a machine that is not the collector fails here
+  rather than dropping rows, and `archive-sync` cannot do this job: it skips every key the
+  store has, and the collector rewrites its odds and events partitions in place.
 
 Objects, under `handoff/sports_betting/` in the store (its `ARCHIVE_S3_PREFIX` applies):
 `marker.json`, `manifest.json`, and `state/<file>` for each state file.
@@ -358,6 +366,18 @@ def import_handoff(deps: Deps, host: str) -> dict[str, Any]:
     return {"marker": updated, "pulled": report.as_dict(), "state_restored": restored}
 
 
+def publish(deps: Deps) -> dict[str, Any]:
+    """Bring the store up to this disk with the collector running; see the module docstring."""
+    checkout = deps.checkout()
+    store = deps.store_factory(checkout)
+    return _converging(
+        "pushing to the store",
+        lambda: converge.push(
+            checkout.archive_root, store, project_scope(), backend=checkout.backend
+        ),
+    )
+
+
 def write_artifact(path: Path, payload: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, indent=2, default=str) + "\n", encoding="utf-8")
@@ -380,6 +400,13 @@ def run(args: argparse.Namespace, deps: Deps) -> tuple[int, dict[str, Any], str]
             marker = result["marker"]
             detail = f"exported {marker['objects']} objects ({marker['data_bytes']} bytes) for {args.to_host}"
             return EXIT_OK, {"ok": True, "detail": detail, **result}, f"handoff: {detail}"
+        if command == "publish":
+            pushed = publish(deps)
+            detail = (
+                f"published {pushed['uploaded']} new, {len(pushed['refreshed'])} refreshed, "
+                f"{pushed['present']} already in the store"
+            )
+            return EXIT_OK, {"ok": True, "detail": detail, **pushed}, f"handoff: {detail}"
         result = import_handoff(deps, args.host)
         pulled = result["pulled"]
         detail = (
@@ -404,6 +431,7 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
     pend.add_argument("--host", required=True)
     imp = sub.add_parser("import", help="pull and restore the handoff addressed to --host")
     imp.add_argument("--host", required=True)
+    sub.add_parser("publish", help="bring the store up to this disk, the collector running")
     return parser.parse_args(argv)
 
 

@@ -203,6 +203,11 @@ general Cloudflare API token does not authenticate against the S3 endpoint. Regi
 > declined on good grounds — but nothing here needs one: the largest artifact any configured
 > source produces is ~20 MB, so the ceiling has ~10× headroom over the real worst case.
 
+`archive-sync` leaves a key the store already holds alone, so it does not carry the odds and
+events partitions the collector rewrites in place. `scripts/handoff.py publish` does, and
+devkit's collectors pass runs it every six hours: see
+[reading it from the other PC](docs/collector-handoff.md#reading-it-from-the-other-pc-while-the-collector-runs).
+
 ### Moving the collector to the other PC
 
 `scripts/handoff.py` carries this project's datasets and the scheduler's state files

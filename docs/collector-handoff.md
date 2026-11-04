@@ -24,6 +24,19 @@ declared (see `pyproject.toml`): `uv pip install -e ../data-lake[archive]`. A pl
 `uv run` keeps it -- its sync is inexact and only adds what the lock names -- but `uv sync`
 removes it. Without it every command fails naming that install line.
 
+## Reading it from the other PC while the collector runs
+
+`ARCHIVE_ROOT` is this PC's disk and the container has no store client, so what the
+collector writes stays here until something pushes it. `archive-sync` is not enough: it skips
+every key the store already has, and the collector rewrites its odds and events partitions
+in place, so a partition stays at whatever was first uploaded.
+
+`uv run python scripts/handoff.py publish` is the refresh, and devkit's collectors pass runs
+it every six hours on the machine assigned the collector (`publish` in `devkit.collectors`).
+It is `converge.push` alone, so the collector keeps running, no marker is written and no
+state travels. It never pulls, because a pull rewrites the partitions the collector is
+writing, and it refuses to replace a partition holding rows this disk lacks.
+
 ## What travels
 
 - **Datasets**: `sports_odds` and `sports_events`, and every dataset

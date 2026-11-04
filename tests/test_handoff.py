@@ -655,6 +655,54 @@ def test_push_refuses_to_drop_rows_only_the_store_holds(tmp_path):
     assert store.objects[key] == odds_partition(remote).read_bytes()
 
 
+def test_publish_refreshes_a_partition_the_store_already_holds(tmp_path, capsys):
+    a = machine(tmp_path, "a")
+    store = FakeStore()
+    collect(a, 1.1)
+    ArchiveSync(a.archive_root, store).run()
+    collect(a, 1.9)  # the collector rewrites the partition in place
+    key = odds_partition(a.archive_root).relative_to(a.archive_root).as_posix()
+    assert ArchiveSync(a.archive_root, store).run().uploaded == 0  # what plain sync misses
+    assert store.objects[key] != odds_partition(a.archive_root).read_bytes()
+
+    code, payload, _ = run_main(["publish"], deps_for(a, store), tmp_path, capsys)
+
+    assert code == 0, payload
+    assert store.objects[key] == odds_partition(a.archive_root).read_bytes()
+    assert key in payload["refreshed"]
+
+
+def test_publish_hands_nothing_over(tmp_path, capsys):
+    a = machine(tmp_path, "a")
+    stops: list[str] = []
+    store = FakeStore()
+    collect(a, 1.1)
+    before = files_under(a.archive_root)
+
+    code, payload, _ = run_main(["publish"], deps_for(a, store, stops), tmp_path, capsys)
+
+    assert code == 0, payload
+    assert stops == []
+    assert not [key for key in store.objects if key.startswith("handoff/")]
+    assert files_under(a.archive_root) == before  # never pulls under the running collector
+
+
+def test_publish_from_a_machine_missing_rows_fails_and_leaves_the_store(tmp_path, capsys):
+    a, b = machine(tmp_path, "a"), machine(tmp_path, "b")
+    store = FakeStore()
+    collect(b, 1.1)
+    ArchiveSync(b.archive_root, store).run()
+    collect(a, 1.9)
+    key = odds_partition(a.archive_root).relative_to(a.archive_root).as_posix()
+    held = store.objects[key]
+
+    code, payload, _ = run_main(["publish"], deps_for(a, store), tmp_path, capsys)
+
+    assert code == 1
+    assert "1 row" in payload["detail"]
+    assert store.objects[key] == held
+
+
 def test_a_local_bulk_file_is_never_overwritten(exported, tmp_path, capsys):
     b = exported.b
     version = bulk(b.archive_root)

@@ -12,10 +12,6 @@ from pydantic import ValidationError
 
 from sports_betting.config import Settings
 
-SKIP_REASON = (
-    "sibling data-lake package absent; install with `uv pip install -e ../data-lake[archive]`"
-)
-
 S3_COMPLETE = dict(
     archive_backend="s3",
     archive_s3_bucket="bronze",
@@ -94,8 +90,12 @@ def test_an_unknown_backend_is_rejected():
         settings(archive_backend="gdrive")
 
 
-def test_settings_satisfies_the_lake_archive_protocol():
-    """The seam itself. Renaming any archive_* field fails here rather than at upload time."""
-    lake_settings = pytest.importorskip("data_lake.settings", reason=SKIP_REASON)
+@pytest.mark.local
+def test_settings_satisfies_the_lake_archive_protocol(lake_module):
+    """The seam itself. Renaming any archive_* field fails here rather than at upload time.
+
+    Needs the sibling lake package, so it is in the local tier (`scripts/e2e.py`).
+    """
+    lake_settings = lake_module("data_lake.settings")
 
     assert isinstance(settings(**S3_COMPLETE), lake_settings.ArchiveSettings)

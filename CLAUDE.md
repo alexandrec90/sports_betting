@@ -107,8 +107,9 @@ touching it:
   `uv pip install -e ../data-lake[archive]` (`uv sync` prunes it; `uv run` does not).
   `tests/test_repo_policy.py` fails if a path source reappears. Import it lazily behind that
   hint; a module-scope import turns its absence into a crash in the one place it is never
-  needed. Any test needing the sibling must `importorskip` **and** be backed by a contract
-  test that runs without it.
+  needed. Any test needing the sibling is marked `local` (the tier `scripts/e2e.py` runs,
+  which installs the sibling when it is on disk) and takes the `lake_module` fixture, which
+  fails rather than skips; it must also be backed by a contract test that runs without it.
 - `_catalog/<dataset>.json` is a **shared namespace with the lake**, so manifests use its
   `DatasetManifest` key names. `sports_betting/archive/manifest.py` is the single writer of
   that shape and validates on every write — do not hand-roll a manifest dict.

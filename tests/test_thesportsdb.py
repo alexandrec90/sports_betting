@@ -96,8 +96,92 @@ def test_client_returns_empty_for_provider_null_and_hides_key_on_failure():
 
     failing = httpx.Client(transport=httpx.MockTransport(lambda _: httpx.Response(429)))
     with pytest.raises(SportsDataProviderError) as exc_info:
-        TheSportsDbClient("private-key", client=failing).fetch_day(date(2026, 8, 3))
+        TheSportsDbClient("private-key", client=failing, sleep=lambda _: None).fetch_day(
+            date(2026, 8, 3)
+        )
     assert "private-key" not in str(exc_info.value)
+
+
+def _sequence_client(*responses: httpx.Response) -> tuple[httpx.Client, list[httpx.Request]]:
+    seen: list[httpx.Request] = []
+    queue = list(responses)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return queue.pop(0)
+
+    return httpx.Client(transport=httpx.MockTransport(handler)), seen
+
+
+def test_client_waits_out_rate_limit_and_retries():
+    # Regression: the shared free key's bucket is drained by other users, so a 429 on the
+    # first call failed every sport for the whole run instead of waiting it out.
+    client, seen = _sequence_client(
+        httpx.Response(429, headers={"Retry-After": "42"}, text="<html>"),
+        httpx.Response(200, json={"events": [event_payload()]}),
+    )
+    gate_calls: list[None] = []
+    slept: list[float] = []
+    provider = TheSportsDbClient(
+        client=client, before_request=lambda: gate_calls.append(None), sleep=slept.append
+    )
+
+    events = provider.fetch_day(date(2026, 8, 3), observed_at=OBSERVED)
+
+    assert [event.external_id for event in events] == ["12345"]
+    assert slept == [42.0]
+    assert len(seen) == 2
+    # The retry passes the provider gate again, so pacing still holds.
+    assert len(gate_calls) == 2
+
+
+def test_client_uses_default_wait_when_retry_after_is_missing_or_malformed():
+    client, _ = _sequence_client(
+        httpx.Response(429),
+        httpx.Response(429, headers={"Retry-After": "soon"}),
+        httpx.Response(200, json={"events": None}),
+    )
+    slept: list[float] = []
+
+    assert TheSportsDbClient(client=client, sleep=slept.append).fetch_day(date(2026, 8, 3)) == []
+    assert slept == [60.0, 60.0]
+
+
+def test_client_gives_up_after_bounded_retries_and_names_the_status():
+    client, seen = _sequence_client(*[httpx.Response(429, headers={"Retry-After": "1"})] * 5)
+    slept: list[float] = []
+
+    with pytest.raises(SportsDataProviderError) as exc_info:
+        TheSportsDbClient("private-key", client=client, sleep=slept.append).fetch_day(
+            date(2026, 8, 3)
+        )
+
+    assert len(seen) == 3
+    assert slept == [1.0, 1.0]
+    assert "HTTP 429" in str(exc_info.value)
+    assert "private-key" not in str(exc_info.value)
+
+
+def test_client_does_not_wait_for_a_retry_after_beyond_its_cap():
+    client, seen = _sequence_client(httpx.Response(429, headers={"Retry-After": "3600"}))
+    slept: list[float] = []
+
+    with pytest.raises(SportsDataProviderError, match="HTTP 429"):
+        TheSportsDbClient(client=client, sleep=slept.append).fetch_day(date(2026, 8, 3))
+
+    assert slept == []
+    assert len(seen) == 1
+
+
+def test_client_does_not_retry_other_http_errors():
+    client, seen = _sequence_client(httpx.Response(500))
+    slept: list[float] = []
+
+    with pytest.raises(SportsDataProviderError, match="HTTP 500"):
+        TheSportsDbClient(client=client, sleep=slept.append).fetch_day(date(2026, 8, 3))
+
+    assert slept == []
+    assert len(seen) == 1
 
 
 def test_payload_hash_is_stable_across_observation_times_but_changes_with_result():

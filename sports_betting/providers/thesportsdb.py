@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import time as _time
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, time
@@ -19,6 +20,12 @@ import httpx
 
 BASE_URL = "https://www.thesportsdb.com/api/v1/json"
 _SENSITIVE_KEY = re.compile(r"(?:authorization|cookie|password|secret|api[_-]?key|token)", re.I)
+# The free key "123" is shared by every free user, so its bucket can be drained before
+# this process sends anything: a 429 is waited out (Retry-After, capped) rather than
+# failing the sport for a six-hour interval.
+RATE_LIMIT_RETRIES = 2
+RATE_LIMIT_DEFAULT_WAIT = 60.0
+RATE_LIMIT_MAX_WAIT = 180.0
 
 
 class SportsDataProviderError(RuntimeError):
@@ -202,11 +209,13 @@ class TheSportsDbClient:
         timeout_seconds: float = 20,
         before_request: Callable[[], None] | None = None,
         client: httpx.Client | None = None,
+        sleep: Callable[[float], None] = _time.sleep,
     ):
         if not api_key.strip():
             raise ValueError("TheSportsDB API key cannot be blank")
         self._api_key = api_key.strip()
         self._before_request = before_request or (lambda: None)
+        self._sleep = sleep
         self._client = client or httpx.Client(timeout=timeout_seconds)
         self._owns_client = client is None
 
@@ -234,19 +243,7 @@ class TheSportsDbClient:
         if league and league.strip():
             params["l"] = league.strip()
 
-        self._before_request()
-        try:
-            response = self._client.get(
-                f"{BASE_URL}/{self._api_key}/eventsday.php",
-                params=params,
-            )
-            response.raise_for_status()
-            payload = response.json()
-        except (httpx.HTTPError, ValueError) as exc:
-            raise SportsDataProviderError(
-                "TheSportsDB request failed; verify connectivity, provider status, and plan limits"
-            ) from exc
-
+        payload = self._get_json(params)
         events = payload.get("events") if isinstance(payload, dict) else None
         if events is None:
             return []
@@ -261,6 +258,44 @@ class TheSportsDbClient:
             except (KeyError, ValueError, SportsDataProviderError):
                 continue
         return snapshots
+
+    def _get_json(self, params: dict[str, str]) -> Any:
+        # The URL embeds the key, so errors name the status, never the request.
+        for attempt in range(RATE_LIMIT_RETRIES + 1):
+            self._before_request()
+            try:
+                response = self._client.get(
+                    f"{BASE_URL}/{self._api_key}/eventsday.php",
+                    params=params,
+                )
+            except httpx.HTTPError as exc:
+                raise _request_failed(type(exc).__name__) from exc
+            if response.status_code == 429:
+                wait = _retry_after(response)
+                if attempt < RATE_LIMIT_RETRIES and wait <= RATE_LIMIT_MAX_WAIT:
+                    self._sleep(wait)
+                    continue
+            if response.is_error:
+                raise _request_failed(f"HTTP {response.status_code}")
+            try:
+                return response.json()
+            except ValueError as exc:
+                raise _request_failed("non-JSON response") from exc
+        raise AssertionError("unreachable")  # pragma: no cover - the loop always returns/raises
+
+
+def _retry_after(response: httpx.Response) -> float:
+    try:
+        return max(0.0, float(response.headers.get("Retry-After", "")))
+    except ValueError:
+        return RATE_LIMIT_DEFAULT_WAIT
+
+
+def _request_failed(cause: str) -> SportsDataProviderError:
+    return SportsDataProviderError(
+        f"TheSportsDB request failed ({cause}); verify connectivity, provider status, "
+        "and plan limits"
+    )
 
 
 def _dicts(items: Iterable[Any]) -> Iterable[dict[str, Any]]:

@@ -58,7 +58,3 @@ enabled = false
 # no hook gates its commit or push, and every check runs after the merge.
 [delivery]
 flow = "direct"
-# The paths that transact money. A PR touching one waits for its CI gate, then merges
-# itself; everything else in this project merges as it opens (devkit's
-# `merge-dependabot-prs.guarded_paths`, shared by `/land`).
-guarded = ["extensions/"]

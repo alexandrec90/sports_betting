@@ -8,6 +8,7 @@ from typing import Any
 
 import httpx
 
+from sports_betting.providers.outage import send_through_outage
 from sports_betting.providers.thesportsdb import EventSnapshot, SportsDataProviderError
 
 BASE_URL = "https://api.balldontlie.io"
@@ -161,12 +162,14 @@ class BallDontLieClient:
         sport_code = (sport or "nba").strip().lower()
         if sport_code not in SPORT_PATHS:
             raise ValueError(f"unsupported free BALLDONTLIE sport {sport_code!r}")
-        self._before_request()
         try:
-            response = self._client.get(
-                BASE_URL + SPORT_PATHS[sport_code],
-                params={"dates[]": day.isoformat(), "per_page": 100},
-                headers={"Authorization": self._key},
+            response = send_through_outage(
+                lambda: self._client.get(
+                    BASE_URL + SPORT_PATHS[sport_code],
+                    params={"dates[]": day.isoformat(), "per_page": 100},
+                    headers={"Authorization": self._key},
+                ),
+                before_request=self._before_request,
             )
             response.raise_for_status()
             payload = response.json()

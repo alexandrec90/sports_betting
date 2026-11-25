@@ -25,6 +25,7 @@ from typing import Any
 import httpx
 
 from sports_betting.providers.odds_api import OddsSnapshot
+from sports_betting.providers.outage import send_through_outage
 from sports_betting.providers.thesportsdb import SportsDataProviderError, canonical_payload
 
 FOOTBALL_URL = "https://v3.football.api-sports.io"
@@ -195,10 +196,12 @@ class ApiSportsFootballClient:
         self.close()
 
     def _get(self, path: str, params: dict[str, str]) -> dict[str, Any]:
-        self._before_request()
         try:
-            response = self._client.get(
-                f"{FOOTBALL_URL}{path}", params=params, headers=self._headers
+            response = send_through_outage(
+                lambda: self._client.get(
+                    f"{FOOTBALL_URL}{path}", params=params, headers=self._headers
+                ),
+                before_request=self._before_request,
             )
             response.raise_for_status()
             payload = response.json()

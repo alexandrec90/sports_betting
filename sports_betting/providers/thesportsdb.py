@@ -18,6 +18,8 @@ from typing import Any
 
 import httpx
 
+from sports_betting.providers.outage import send_through_outage
+
 BASE_URL = "https://www.thesportsdb.com/api/v1/json"
 _SENSITIVE_KEY = re.compile(r"(?:authorization|cookie|password|secret|api[_-]?key|token)", re.I)
 # The free key "123" is shared by every free user, so its bucket can be drained before
@@ -262,11 +264,13 @@ class TheSportsDbClient:
     def _get_json(self, params: dict[str, str]) -> Any:
         # The URL embeds the key, so errors name the status, never the request.
         for attempt in range(RATE_LIMIT_RETRIES + 1):
-            self._before_request()
             try:
-                response = self._client.get(
-                    f"{BASE_URL}/{self._api_key}/eventsday.php",
-                    params=params,
+                response = send_through_outage(
+                    lambda: self._client.get(
+                        f"{BASE_URL}/{self._api_key}/eventsday.php",
+                        params=params,
+                    ),
+                    before_request=self._before_request,
                 )
             except httpx.HTTPError as exc:
                 raise _request_failed(type(exc).__name__) from exc

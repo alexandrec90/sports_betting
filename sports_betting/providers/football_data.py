@@ -8,6 +8,7 @@ from typing import Any
 
 import httpx
 
+from sports_betting.providers.outage import send_through_outage
 from sports_betting.providers.thesportsdb import EventSnapshot, SportsDataProviderError
 
 BASE_URL = "https://api.football-data.org/v4"
@@ -120,12 +121,14 @@ class FootballDataClient:
         return self._matches(params, observed_at)
 
     def _matches(self, params: dict[str, str], observed_at: datetime | None) -> list[EventSnapshot]:
-        self._before_request()
         try:
-            response = self._client.get(
-                f"{BASE_URL}/matches",
-                params=params,
-                headers={"X-Auth-Token": self._key},
+            response = send_through_outage(
+                lambda: self._client.get(
+                    f"{BASE_URL}/matches",
+                    params=params,
+                    headers={"X-Auth-Token": self._key},
+                ),
+                before_request=self._before_request,
             )
             response.raise_for_status()
             payload = response.json()

@@ -17,6 +17,7 @@ from typing import Any
 
 import httpx
 
+from sports_betting.providers.outage import send_through_outage
 from sports_betting.providers.thesportsdb import SportsDataProviderError, canonical_payload
 
 BASE_URL = "https://api.the-odds-api.com/v4"
@@ -146,9 +147,13 @@ class OddsApiClient:
         self.close()
 
     def _get(self, path: str, params: dict[str, str], *, paid: bool) -> Any:
-        (self._before_request if paid else self._before_free_request)()
         try:
-            response = self._client.get(f"{BASE_URL}{path}", params={"apiKey": self._key, **params})
+            response = send_through_outage(
+                lambda: self._client.get(
+                    f"{BASE_URL}{path}", params={"apiKey": self._key, **params}
+                ),
+                before_request=self._before_request if paid else self._before_free_request,
+            )
             response.raise_for_status()
             payload = response.json()
         except (httpx.HTTPError, ValueError) as exc:

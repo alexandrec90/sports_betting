@@ -80,9 +80,13 @@ jobs:
   test:
     name: Tests
     runs-on: ubuntu-latest
+    # Google's mirror of the Docker Official Images, not Docker Hub or ECR Public: a
+    # hosted runner pulls anonymously on a shared IP, and both answer `toomanyrequests`
+    # once strangers spend its quota, failing the job before a test runs.
+    # tests/test_workflow_images.py in devkit.
     services:
       db:
-        image: postgres:18
+        image: mirror.gcr.io/library/postgres:18
         env:
           POSTGRES_USER: sports_betting
           POSTGRES_PASSWORD: sports_betting_local_dev # pragma: allowlist secret
@@ -148,3 +152,45 @@ jobs:
         env:
           DEVKIT_DIR: ${{ github.workspace }}/.devkit-src
         run: python scripts/sync-devkit.py --check
+
+  e2e:
+    name: E2E
+    # The default branch only: PRs merge without waiting for a gate, so a PR run of this
+    # would decide nothing. After the drift job, whatever it said, so a push run does not
+    # take one more runner at once. A burst of merges collapses to the newest commit; the
+    # older run's conclusion is then `cancelled`, which the fix trigger reads as no verdict
+    # rather than a red. A red here is a red `PR Gate` on the default branch, which is what
+    # the fix pass reads.
+    needs: devkit-drift
+    if: ${{ !cancelled() && github.event_name != 'pull_request' }}
+    runs-on: ubuntu-latest
+    concurrency:
+      group: ${{ github.workflow }}-e2e-${{ github.ref }}
+      cancel-in-progress: true
+    env:
+      # What devkit's scheduler sets: under it a skip in the tier is a failure.
+      DEVKIT_E2E: "1"
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/setup-python-env
+      - name: Clone the sibling data-lake checkout
+        # Beside the repo, where `scripts/e2e.py` looks for it on the workstation, so the
+        # same code installs it into `.venv`. A plain clone, not `actions/checkout`: that
+        # action cannot write outside the workspace. The repository is public.
+        run: git clone --depth 1 https://github.com/alexandrec90/data-lake.git ../data-lake
+      - name: Pull the Dockerfile's base image from the mirror
+        # `FROM python:3.12-slim` would pull from Docker Hub, whose anonymous quota on a
+        # shared runner IP is the one the service images above avoid. Tagged under the
+        # name the Dockerfile uses, so `docker compose build` finds it locally.
+        run: |
+          docker pull mirror.gcr.io/library/python:3.12-slim
+          docker tag mirror.gcr.io/library/python:3.12-slim python:3.12-slim
+      - name: End-to-end tier
+        run: uv run python scripts/e2e.py --ci
+      - name: Upload e2e artifact
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: e2e-failures
+          path: logs/e2e-junit.xml
+          if-no-files-found: ignore

@@ -68,12 +68,14 @@ where = ["."]
 # `testpaths` is what keeps `scripts/hooks/tests/` out of the application suite —
 # those are the vendored harness's own stdlib-only tests and run separately.
 testpaths = ["tests/"]
-# `-m "not local"` keeps the local end-to-end tier out of every run but its own:
-# `scripts/e2e.py` passes `-m local`, which replaces this one (.claude/rules/local-e2e.md).
-addopts = "-p devkit_temproot -m \"not local\""
+# `-m "not local and not ci_e2e"` keeps both end-to-end tiers out of every run but their
+# own: `scripts/e2e.py` passes `-m local` (`--ci`: `-m ci_e2e`), which replaces this one
+# (.claude/rules/local-e2e.md).
+addopts = "-p devkit_temproot -m \"not local and not ci_e2e\""
 pythonpath = ["scripts/pytest-plugins"]
 markers = [
-  "local: needs this workstation (the Docker daemon, the sibling data-lake checkout); run by scripts/e2e.py only",
+  "local: needs this workstation itself (its logins, its live data); run by scripts/e2e.py only",
+  "ci_e2e: end to end on a hosted runner (Docker, the sibling data-lake checkout); run by scripts/e2e.py --ci in the PR Gate's E2E job",
 ]
 
 [tool.mypy]

@@ -93,12 +93,58 @@ def test_pytest_command_selects_exactly_the_tier_and_writes_the_artifact():
     assert command[-2:] == ["-k", "stack"]
 
 
-def test_the_default_run_deselects_the_tier():
-    """The other half of the contract: every run but this script's leaves `local` out."""
+def test_the_default_run_deselects_both_tiers():
+    """The other half of the contract: every run but this script's leaves both tiers out."""
     text = (Path(__file__).parents[1] / "pyproject.toml").read_text(encoding="utf-8")
 
-    assert 'addopts = "-p devkit_temproot -m \\"not local\\""' in text
+    assert 'addopts = "-p devkit_temproot -m \\"not local and not ci_e2e\\""' in text
     assert '"local: ' in text
+    assert '"ci_e2e: ' in text
+
+
+def test_split_args_selects_the_ci_tier_and_drops_the_flag():
+    assert e2e.split_args(["--ci", "-k", "stack"]) == ("ci_e2e", ["-k", "stack"])
+
+
+def test_split_args_without_the_flag_selects_the_local_tier():
+    assert e2e.split_args(["-k", "stack"]) == ("local", ["-k", "stack"])
+
+
+def test_pytest_command_selects_the_marker_it_is_given():
+    command = e2e.pytest_command("py", [], e2e.CI_MARKER)
+
+    assert command[command.index("-m", 2) + 1] == "ci_e2e"
+    assert "--ci" not in command
+
+
+def test_a_ci_run_that_executed_nothing_names_its_marker():
+    code, lines = e2e.summarize([], e2e.CI_MARKER)
+
+    assert code == 1
+    assert "no test marked `ci_e2e` ran" in lines[-1]
+
+
+def test_main_with_ci_runs_the_ci_marker(monkeypatch, tmp_path, capsys):
+    artifact = tmp_path / "logs" / "e2e-junit.xml"
+    monkeypatch.setattr(e2e, "ARTIFACT", artifact)
+    monkeypatch.setattr(e2e, "ensure_lake", lambda *_args: None)
+    commands = []
+
+    def fake_run(command, **_kwargs):
+        commands.append(command)
+        artifact.write_text(
+            '<testsuite><testcase classname="tests.test_a" name="test_ok" '
+            'file="tests/test_a.py"/></testsuite>',
+            encoding="utf-8",
+        )
+        return subprocess.CompletedProcess(command, 0)
+
+    monkeypatch.setattr(e2e.subprocess, "run", fake_run)
+
+    assert e2e.main(["--ci"]) == 0
+    assert commands[0][commands[0].index("-m", 2) + 1] == "ci_e2e"
+    assert "--ci" not in commands[0]
+    assert "e2e: 1 passed, 0 not passed" in capsys.readouterr().out
 
 
 def test_venv_python_prefers_the_checkout_interpreter(tmp_path):

@@ -1,7 +1,8 @@
-"""Shared fixtures for the local end-to-end tier (`-m local`, run by `scripts/e2e.py`).
+"""Shared fixtures for the end-to-end tier (`-m ci_e2e`, run by `scripts/e2e.py --ci`).
 
-A tier test never skips: deselection already keeps it out of CI, and on the workstation it
-was written for a missing prerequisite is a failure that names what to install.
+A tier test never skips: deselection already keeps it out of the ordinary suite, and in
+the E2E job or on the workstation a missing prerequisite is a failure that names what to
+install.
 """
 
 from __future__ import annotations
@@ -31,5 +32,5 @@ def import_lake_module(name: str) -> ModuleType:
 
 @pytest.fixture
 def lake_module() -> Callable[[str], ModuleType]:
-    """`lake_module("data_lake.archive.catalog")`, for tests marked `local`."""
+    """`lake_module("data_lake.archive.catalog")`, for tests marked `ci_e2e`."""
     return import_lake_module

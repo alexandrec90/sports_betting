@@ -58,6 +58,8 @@ enabled = false
 # no hook gates its commit or push, and every check runs after the merge.
 [delivery]
 flow = "direct"
+# Every end-to-end test is `ci_e2e`, run by the PR Gate's E2E job; none needs this PC.
+e2e = "ci"
 # The paths that transact money: the browser extension runs inside the logged-in
 # sportsbook account. A PR touching one is to wait for its CI gate and then merge itself.
 # Nothing enforces this until devkit #809 is released and adopted here.

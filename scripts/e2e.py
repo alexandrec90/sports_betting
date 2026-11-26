@@ -1,10 +1,18 @@
 #!/usr/bin/env python3
-"""Run the local end-to-end tier: the tests only this workstation can run.
+"""Run an end-to-end tier: the tests the ordinary suite leaves out.
 
-These are the tests marked `local` -- the Docker stack, the sibling `data-lake` checkout --
-which `pyproject.toml`'s `addopts` deselects from every other run, CI's included. devkit's
-nightly `devkit-local-e2e` job runs this script in the checkout root with `DEVKIT_E2E=1`;
-the contract it keeps is `.claude/rules/local-e2e.md`'s:
+Two markers, both deselected by `pyproject.toml`'s `addopts`:
+
+- `ci_e2e` (`--ci`): end to end on a hosted runner -- the collector image built and run
+  through Docker Compose, the sibling `data-lake` package's real readers. The PR Gate's
+  `E2E` job runs it on the default branch, with the sibling cloned beside the repo. Every
+  end-to-end test this project has is here today.
+- `local` (no flag): a test that needs this workstation itself. There is none, so
+  `.devkit.toml` says `[delivery] e2e = "ci"` and devkit's nightly `devkit-local-e2e` job
+  leaves this project to CI; a run of it here is red, as a tier that ran nothing.
+
+Either way the script runs in the checkout root, `DEVKIT_E2E=1` under the scheduler and
+in CI, and keeps `.claude/rules/local-e2e.md`'s contract:
 
 - exit 0 green, anything else red;
 - one `FAILED <id>` line per failure, error *and skip* -- a skip in this tier is a failure,
@@ -20,8 +28,9 @@ VS Code task, may start this under the machine's Python. The failure artifact is
 XML at `logs/e2e-junit.xml`, overwritten per run.
 
 Usage:
-    python scripts/e2e.py            # the whole tier
-    python scripts/e2e.py -k stack   # extra arguments go to pytest
+    python scripts/e2e.py --ci            # the CI tier, as the PR Gate's E2E job runs it
+    python scripts/e2e.py                 # the local tier
+    python scripts/e2e.py --ci -k stack   # other arguments go to pytest
 """
 
 from __future__ import annotations
@@ -37,6 +46,8 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 ARTIFACT = REPO_ROOT / "logs" / "e2e-junit.xml"
 MARKER = "local"
+CI_MARKER = "ci_e2e"
+CI_FLAG = "--ci"
 LAKE_PACKAGE = "data_lake"
 LAKE_DIRNAME = "data-lake"
 
@@ -75,14 +86,20 @@ def sibling_lake(root: Path, git_common_dir: Path | None) -> Path | None:
     return None
 
 
-def pytest_command(python: Path | str, extra: Sequence[str]) -> list[str]:
+def split_args(argv: Sequence[str]) -> tuple[str, list[str]]:
+    """`(marker, pytest arguments)`: `--ci` selects `ci_e2e`, and is not passed on."""
+    marker = CI_MARKER if CI_FLAG in argv else MARKER
+    return marker, [arg for arg in argv if arg != CI_FLAG]
+
+
+def pytest_command(python: Path | str, extra: Sequence[str], marker: str = MARKER) -> list[str]:
     """The pytest run that selects exactly the tier, writing its JUnit artifact."""
     return [
         str(python),
         "-m",
         "pytest",
         "-m",
-        MARKER,
+        marker,
         "-q",
         "-rN",  # the summary is this script's, from the artifact, in the contract's shape
         "-o",
@@ -124,7 +141,7 @@ def parse_junit(text: str) -> list[Outcome]:
     return outcomes
 
 
-def summarize(outcomes: Sequence[Outcome]) -> tuple[int, list[str]]:
+def summarize(outcomes: Sequence[Outcome], marker: str = MARKER) -> tuple[int, list[str]]:
     """The exit code and the report lines: `FAILED <id>` for every non-pass, then a count."""
     lines = [
         f"FAILED {o.nodeid} - {o.status}" + (f": {o.message}" if o.message else "")
@@ -133,7 +150,7 @@ def summarize(outcomes: Sequence[Outcome]) -> tuple[int, list[str]]:
     ]
     passed = sum(o.status == "passed" for o in outcomes)
     if not outcomes:
-        lines.append(f"e2e: no test marked `{MARKER}` ran; a tier that runs nothing is red")
+        lines.append(f"e2e: no test marked `{marker}` ran; a tier that runs nothing is red")
         return 1, lines
     lines.append(f"e2e: {passed} passed, {len(outcomes) - passed} not passed; artifact: {ARTIFACT}")
     return (0 if passed == len(outcomes) else 1), lines
@@ -178,19 +195,19 @@ def ensure_lake(python: Path | str, root: Path) -> None:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    extra = list(sys.argv[1:] if argv is None else argv)
+    marker, extra = split_args(sys.argv[1:] if argv is None else argv)
     python = venv_python(REPO_ROOT) or Path(sys.executable)
     ensure_lake(python, REPO_ROOT)
     ARTIFACT.parent.mkdir(parents=True, exist_ok=True)
     ARTIFACT.unlink(missing_ok=True)
     env = {**os.environ, "PYTHONUTF8": "1"}
     pytest_code = subprocess.run(
-        pytest_command(python, extra), cwd=REPO_ROOT, env=env, check=False
+        pytest_command(python, extra, marker), cwd=REPO_ROOT, env=env, check=False
     ).returncode
     if not ARTIFACT.is_file():
         print(f"e2e: pytest exited {pytest_code} without writing {ARTIFACT}; the run is red")
         return pytest_code or 1
-    code, lines = summarize(parse_junit(ARTIFACT.read_text(encoding="utf-8")))
+    code, lines = summarize(parse_junit(ARTIFACT.read_text(encoding="utf-8")), marker)
     print("\n".join(lines))
     return code or (pytest_code if pytest_code not in (0, 5) else 0)
 

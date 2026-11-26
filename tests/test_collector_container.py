@@ -1,7 +1,8 @@
-"""End to end: the shipped collector image, run through `docker-compose.yml` on this machine.
+"""End to end: the shipped collector image, run through `docker-compose.yml`.
 
-Local tier only (`-m local`, run by `scripts/e2e.py`): it needs the Docker daemon, which no
-hosted runner here has. It builds the `prod` stage exactly as `docker compose up` would and
+The `ci_e2e` tier (`-m ci_e2e`, run by `scripts/e2e.py --ci`): it needs a Docker daemon,
+which the PR Gate's `E2E` job has on `ubuntu-latest` and Docker Desktop has on the
+workstation. It builds the `prod` stage exactly as `docker compose up` would and
 runs the CLI in it, so it covers what no unit test reaches -- the image installs, the
 `sports-betting` entry point exists, the non-root `appuser` can write to the bind mounts,
 and the compose `environment` block points the health artifact at the mounted `logs/`,
@@ -70,7 +71,7 @@ def _require(result: subprocess.CompletedProcess[str], what: str) -> None:
 def stack(tmp_path: Path) -> Iterator[tuple[Path, Path]]:
     """The built image and an override file; yields `(override, logs)` and tears the project down."""
     if shutil.which("docker") is None:
-        pytest.fail("the `docker` CLI is not on PATH; this tier needs Docker Desktop")
+        pytest.fail("the `docker` CLI is not on PATH; this tier needs Docker")
     daemon = subprocess.run(
         ["docker", "info"],  # noqa: S607 - docker from PATH on purpose; checked just above
         capture_output=True,
@@ -85,6 +86,11 @@ def stack(tmp_path: Path) -> Iterator[tuple[Path, Path]]:
     lake, logs = tmp_path / "lake", tmp_path / "logs"
     lake.mkdir()
     logs.mkdir()
+    # The image runs as `appuser` (uid 10001), not as whoever owns `tmp_path`. Docker
+    # Desktop's mounts ignore that; a Linux daemon does not, and pytest makes `tmp_path`
+    # 0o700. The real mounts are directories the collector may write, so these are too.
+    lake.chmod(0o777)
+    logs.chmod(0o777)
     override = tmp_path / "compose.override.json"
     override.write_text(json.dumps(override_document(lake, logs)), encoding="utf-8")
     _require(
@@ -110,7 +116,7 @@ def _run(override: Path, *cli: str) -> subprocess.CompletedProcess[str]:
     )
 
 
-@pytest.mark.local
+@pytest.mark.ci_e2e
 def test_collector_image_collects_and_reports_health_through_the_mounts(stack):
     override, logs = stack
 

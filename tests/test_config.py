@@ -90,11 +90,11 @@ def test_an_unknown_backend_is_rejected():
         settings(archive_backend="gdrive")
 
 
-@pytest.mark.ci_e2e
+@pytest.mark.local
 def test_settings_satisfies_the_lake_archive_protocol(lake_module):
     """The seam itself. Renaming any archive_* field fails here rather than at upload time.
 
-    Needs the sibling lake package, so it is in the `ci_e2e` tier (`scripts/e2e.py --ci`).
+    Needs the sibling lake package, so it is in the local tier (`scripts/e2e.py`).
     """
     lake_settings = lake_module("data_lake.settings")
 

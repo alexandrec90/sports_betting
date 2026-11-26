@@ -25,10 +25,9 @@ jobs:
   full-suite:
     name: Full suite
     runs-on: ubuntu-latest
-    # mirror.gcr.io, not Docker Hub or ECR Public: see the same block in pr-gate.yml.
     services:
       db:
-        image: mirror.gcr.io/library/postgres:18
+        image: postgres:18
         env:
           POSTGRES_USER: sports_betting
           POSTGRES_PASSWORD: sports_betting_local_dev # pragma: allowlist secret

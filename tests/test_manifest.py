@@ -3,13 +3,11 @@
 Two tiers on purpose. The contract tests assert the manifest shape against constants held
 *in this repo*, so they run everywhere including a single-repo CI checkout. The round-trip
 tests at the bottom feed a real manifest to the real `DatasetManifest.from_dict`; they
-need the sibling, so they are marked `ci_e2e` and run in the end-to-end tier
-(`scripts/e2e.py --ci`, the PR Gate's `E2E` job, which clones the sibling), where an
-absent sibling is a failure rather than a skip.
+need the sibling, so they are marked `local` and run in the local end-to-end tier
+(`scripts/e2e.py`), where an absent sibling is a failure rather than a skip.
 
 Only the second tier proves the mirrored constants are still accurate, so it is not
-decoration. But it cannot be the only gate either: it runs on the default branch alone,
-after the merge, and the ordinary suite never does.
+decoration. But it cannot be the only gate either: CI never runs it.
 """
 
 from __future__ import annotations
@@ -171,7 +169,7 @@ def test_bulk_archive_writes_a_contract_shaped_manifest(tmp_path):
     assert manifest["artifacts"][0]["source_url"] == "https://example.test/E0.csv"
 
 
-@pytest.mark.ci_e2e
+@pytest.mark.local
 def test_manifest_round_trips_through_the_real_lake_reader(lake_module):
     catalog = lake_module("data_lake.archive.catalog")
     manifest = a_manifest(artifacts=[{"source_url": "https://example.test/a.csv"}])
@@ -184,7 +182,7 @@ def test_manifest_round_trips_through_the_real_lake_reader(lake_module):
     assert parsed.schema_version == catalog.CATALOG_SCHEMA_VERSION
 
 
-@pytest.mark.ci_e2e
+@pytest.mark.local
 def test_a_real_written_manifest_round_trips(tmp_path, lake_module):
     """End to end: what `EventArchive` actually puts on disk, through the lake's reader."""
     catalog = lake_module("data_lake.archive.catalog")
@@ -197,7 +195,7 @@ def test_a_real_written_manifest_round_trips(tmp_path, lake_module):
     assert parsed.min_ts is not None
 
 
-@pytest.mark.ci_e2e
+@pytest.mark.local
 def test_our_constants_match_the_lake_constants(lake_module):
     catalog = lake_module("data_lake.archive.catalog")
 

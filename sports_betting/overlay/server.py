@@ -18,7 +18,9 @@ from dataclasses import asdict
 from datetime import UTC, datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
+from urllib.parse import urlsplit
 
+from sports_betting.dashboard.page import PAGE
 from sports_betting.overlay.coverage import CoverageTracker
 from sports_betting.overlay.evaluate import evaluate
 from sports_betting.overlay.lines import FairLine
@@ -31,6 +33,14 @@ DEFAULT_PORT = 8765
 DEFAULT_MIN_EDGE = 0.03
 MAX_BODY_BYTES = 8 * 1024 * 1024
 LINES_TTL_SECONDS = 60.0
+#: The dashboard's routes; served only when the server was given a `status` source.
+DASHBOARD_PATHS = frozenset({"/", "/api/status"})
+LOOPBACK_NAMES = frozenset({"127.0.0.1", "localhost"})
+#: The page is self-contained: inline style and script, same-origin fetch, nothing else.
+PAGE_POLICY = (
+    "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; "
+    "connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'"
+)
 
 
 class CachedLines:
@@ -62,6 +72,20 @@ def _jsonable(value: Any) -> Any:
     return value
 
 
+def loopback_host(header: str | None) -> bool:
+    """Whether a request's `Host` names this machine's loopback, whatever the port.
+
+    The port is not checked: devkit's dashboard gateway holds the public port and forwards
+    to this server on another, so the header carries the gateway's port, not ours.
+    """
+    if not header:
+        return False
+    name = header.strip().lower()
+    if name.startswith("["):
+        return name.split("]", 1)[0] == "[::1"
+    return name.rsplit(":", 1)[0] in LOOPBACK_NAMES
+
+
 def _summary(lines: list[FairLine]) -> dict[str, Any]:
     return {
         "lines": len(lines),
@@ -79,6 +103,7 @@ class OverlayServer(ThreadingHTTPServer):
         lines: Callable[[], list[FairLine]],
         min_edge: float = DEFAULT_MIN_EDGE,
         coverage: CoverageTracker | None = None,
+        status: Callable[[], dict[str, Any]] | None = None,
     ):
         if address[0] != HOST:
             raise ValueError(f"the overlay service binds {HOST} only, not {address[0]!r}")
@@ -86,6 +111,9 @@ class OverlayServer(ThreadingHTTPServer):
         self.lines = lines
         self.min_edge = min_edge
         self.coverage = coverage
+        #: The dashboard's payload (`sports_betting.dashboard.build_status`); None serves
+        #: no dashboard, so `/` and `/api/status` answer 404.
+        self.status = status
 
 
 class OverlayHandler(BaseHTTPRequestHandler):
@@ -103,12 +131,34 @@ class OverlayHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _send_page(self) -> None:
+        body = PAGE.encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Content-Security-Policy", PAGE_POLICY)
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.end_headers()
+        self.wfile.write(body)
+
     def do_GET(self) -> None:
-        if self.path != "/health":
+        path = urlsplit(self.path).path
+        if path == "/health":
+            lines = self.server.lines()
+            self._send(200, {"ok": True, "min_edge": self.server.min_edge, **_summary(lines)})
+            return
+        if path not in DASHBOARD_PATHS or self.server.status is None:
             self._send(404, {"ok": False, "error": "not found"})
             return
-        lines = self.server.lines()
-        self._send(200, {"ok": True, "min_edge": self.server.min_edge, **_summary(lines)})
+        if not loopback_host(self.headers.get("Host")):
+            # A DNS-rebinding page reaches 127.0.0.1 under its own name; refuse it.
+            self._send(421, {"ok": False, "error": "the dashboard answers loopback names only"})
+            return
+        if path == "/api/status":
+            self._send(200, self.server.status())
+        else:
+            self._send_page()
 
     def do_POST(self) -> None:
         if self.path != "/evaluate":

@@ -15,6 +15,7 @@ from sports_betting.archive import ArchiveSync, EventArchive, restore_sources, s
 from sports_betting.archive.recatalog import rebuild_catalogs
 from sports_betting.archive.sync import DEFAULT_MAX_OBJECT_BYTES
 from sports_betting.config import Settings, get_settings
+from sports_betting.dashboard import StatusSources, build_status
 from sports_betting.health import HealthStore
 from sports_betting.historical import (
     FOOTBALL_DATA_EXTRA_COUNTRIES,
@@ -263,18 +264,22 @@ def _run_bulk_import(importers: HistoricalImporters, args: argparse.Namespace) -
 def _overlay_serve(args: argparse.Namespace) -> int:
     if not 0 <= args.min_edge < 1:
         raise ValueError("--min-edge is a fraction between 0 and 1, e.g. 0.03")
-    root = get_settings().archive_root
+    settings = get_settings()
+    root = settings.archive_root
     lines = CachedLines(lambda: load_fair_lines(root))
+    sources = StatusSources.from_settings(settings, coverage_file=COVERAGE_PATH)
     server = OverlayServer(
         (OVERLAY_HOST, args.port),
         lines=lines,
         min_edge=args.min_edge,
         coverage=CoverageTracker(COVERAGE_PATH),
+        status=lambda: build_status(sources, lines()),
     )
     count = len(lines())
     sys.stdout.write(
         f"overlay: {count} upcoming fair line(s) from {root}; "
         f"listening on http://{OVERLAY_HOST}:{server.server_port} (Ctrl+C to stop)\n"
+        f"dashboard: http://{OVERLAY_HOST}:{server.server_port}/\n"
     )
     if not count:
         sys.stdout.write(

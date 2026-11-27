@@ -267,7 +267,7 @@ def test_status_sources_take_budgets_and_paths_from_settings(tmp_path):
         archive_root=tmp_path,
         the_odds_api_monthly_budget=300,
         api_sports_daily_budget=50,
-        the_odds_api_key="secret-key",
+        the_odds_api_key="secret-key",  # pragma: allowlist secret - dummy, asserted absent
     )
     where = StatusSources.from_settings(settings, coverage_file=tmp_path / "c.json")
     assert (where.odds_monthly_budget, where.api_sports_daily_budget) == (300, 50)

@@ -100,6 +100,25 @@ counted but not judged. See which leagues you browse and how many get priced:
 uv run sports-betting overlay-coverage
 ```
 
+### Dashboard
+
+The overlay service also serves a dashboard at <http://127.0.0.1:8765/>. It shows:
+
+- each collection job's health
+- the month's The Odds API credits and the day's API-Sports requests, against their budgets
+- the upcoming fair lines per sport
+- the overlay's coverage per sport
+- every dataset in the archive catalog
+
+It reads only the artifacts collection already writes, so opening it spends no quota. The
+same data as JSON is at `/api/status`. Both routes answer only to a loopback `Host`.
+
+devkit's dashboard gateway (`devkit-dashboards`) already serves this project's
+`overlay-serve` on 8765. With the gateway installed, opening the URL starts the service, and
+the gateway stops it again after 30 idle minutes. `python scripts/dashboards.py open
+sports_betting` in devkit opens it. Without the gateway, start `overlay-serve` by hand as in
+step 2 above.
+
 ### Which leagues get fair lines
 
 The free The Odds API plan is 500 credits a month for all sports, so the collector spends them

@@ -162,7 +162,9 @@ def test_fair_line_section_counts_by_sport_and_dates_the_freshest_price():
     lines = [
         fair("Ice Hockey", start=NOW + timedelta(hours=5), observed=NOW - timedelta(hours=2)),
         fair("Ice Hockey", start=NOW + timedelta(hours=1), observed=NOW - timedelta(hours=1)),
-        fair("Soccer", start=NOW + timedelta(hours=9), observed=NOW - timedelta(hours=3), sharp=True),
+        fair(
+            "Soccer", start=NOW + timedelta(hours=9), observed=NOW - timedelta(hours=3), sharp=True
+        ),
     ]
     section = fair_line_section(lines, now=NOW)
     assert section["total"] == 3 and section["sharp"] == 1
